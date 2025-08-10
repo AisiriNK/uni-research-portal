@@ -1,13 +1,45 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import { useState } from "react"
+import { ThemeProvider } from "@/components/ThemeProvider"
+import { Header } from "@/components/Header"
+import { Sidebar } from "@/components/Sidebar"
+import { ResearchHub } from "@/components/ResearchHub"
+import { AIReportFormatter } from "@/components/AIReportFormatter"
+import { ApprovalsPrinting } from "@/components/ApprovalsPrinting"
+import { NoDueClearance } from "@/components/NoDueClearance"
 
 const Index = () => {
+  const [activeSection, setActiveSection] = useState("research")
+
+  const renderContent = () => {
+    switch (activeSection) {
+      case "research":
+        return <ResearchHub />
+      case "formatter":
+        return <AIReportFormatter />
+      case "approvals":
+        return <ApprovalsPrinting />
+      case "clearance":
+        return <NoDueClearance />
+      default:
+        return <ResearchHub />
+    }
+  }
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="text-4xl font-bold mb-4">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
+    <ThemeProvider defaultTheme="light" storageKey="university-portal-theme">
+      <div className="min-h-screen bg-background">
+        <Header />
+        <div className="flex">
+          <Sidebar 
+            activeSection={activeSection} 
+            onSectionChange={setActiveSection} 
+          />
+          <main className="flex-1 overflow-auto">
+            {renderContent()}
+          </main>
+        </div>
       </div>
-    </div>
+    </ThemeProvider>
   );
 };
 
