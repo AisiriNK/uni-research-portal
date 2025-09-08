@@ -46,15 +46,35 @@ export async function getClusterTree(
       topic,
       count: count.toString()
     })
-
+    
+    console.log('Fetching cluster tree from:', url);
+    
     const response = await fetch(url);
     
+    // Log response status for debugging
+    console.log('API Response status:', response.status, response.statusText);
+    
     if (!response.ok) {
-      const errorText = await response.text();
+      let errorText;
+      try {
+        errorText = await response.text();
+      } catch (e) {
+        errorText = 'Unable to read error response';
+      }
+      console.error('API error response:', errorText);
       throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
     }
     
     const data = await response.json();
+    
+    // Validate data structure
+    if (!data || !Array.isArray(data.nodes) || !Array.isArray(data.edges)) {
+      console.error('Invalid API response format:', data);
+      throw new Error('Invalid API response: missing nodes or edges arrays');
+    }
+    
+    console.log(`Received ${data.nodes.length} nodes and ${data.edges.length} edges`);
+    
     return data;
   } catch (error) {
     console.error('Error fetching cluster tree:', error);

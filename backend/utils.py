@@ -176,7 +176,7 @@ async def fetch_papers_from_openalex(query: str, count: int = 50, year_from: int
                 "per-page": min(count, 200),
                 "sort": "cited_by_count:desc",
                 "filter": f"type:article,publication_year:{year_from}-{year_to}",
-                "select": "id,title,abstract_inverted_index,authorships,publication_year,doi,primary_location,cited_by_count,concepts"
+                "select": "id,display_name,abstract_inverted_index,authorships,publication_year,doi,primary_location,cited_by_count,concepts"
             }
             
             logger.info(f"Fetching {count} papers for query: '{query}'")
@@ -228,7 +228,7 @@ async def classify_papers_with_groq(papers: List[Paper]) -> Dict[str, Any]:
             }
             
             payload = {
-                "model": "llama3-8b-8192",
+                "model": "llama-3.3-70b-versatile",
                 "messages": [
                     {
                         "role": "system",
@@ -264,101 +264,174 @@ async def classify_papers_with_groq(papers: List[Paper]) -> Dict[str, Any]:
 def create_classification_prompt(paper_summaries: List[Dict]) -> str:
     """Create a structured prompt for Groq AI classification"""
     prompt = f"""
-Classify these {len(paper_summaries)} research papers into engineering disciplines. 
+    Classify these {len(paper_summaries)} research papers into engineering disciplines.
 
-Create a hierarchical structure with:
-1. Main branches: CSE, ECE, EEE, Mechanical, Civil
-2. Subclusters within each branch based on specific research areas
+    Create a hierarchical structure with:
+    1. Main branches: CSE, ECE, EEE, Mechanical, Civil
+    2. Subdomains within each branch based on specific research areas (e.g., Neural Networks, Machine Learning, Image Processing)
+    3. Major topics of research within each subdomain (e.g., CNN, RNN, SVM, GAN, etc)
 
-For each paper, determine:
-- Which main branch it belongs to
-- Which subcluster within that branch
-- If no existing subcluster fits, suggest a new one
+    For each paper, determine:
+    - Which main branch it belongs to
+    - Which subdomain within that branch
+    - Which major topic of research within that subdomain
+    - If no existing subdomain or major topic fits, suggest a new one
 
-Papers to classify:
-"""
-    
+    Papers to classify:
+    """
     for i, paper in enumerate(paper_summaries[:20], 1):  # Limit to first 20 papers for prompt
-        prompt += f"\n{i}. ID: {paper['id']}\n"
-        prompt += f"   Title: {paper['title']}\n"
-        prompt += f"   Abstract: {paper['abstract']}\n"
-        prompt += f"   Concepts: {', '.join(paper['concepts'])}\n"
-    
+                prompt += f"\n{i}. ID: {paper['id']}\n"
+                prompt += f"   Title: {paper['title']}\n"
+                prompt += f"   Abstract: {paper['abstract']}\n"
+                prompt += f"   Concepts: {', '.join(paper['concepts'])}\n"
+
     prompt += """
 
 Respond with JSON in this exact format:
 {
-  "classification": {
-    "CSE": {
-      "Machine Learning": ["paper_id1", "paper_id2"],
-      "Software Engineering": ["paper_id3"]
-    },
-    "ECE": {
-      "Signal Processing": ["paper_id4"],
-      "Communication Systems": ["paper_id5"]
-    },
-    "EEE": {
-      "Power Systems": ["paper_id6"],
-      "Control Systems": ["paper_id7"]
-    },
-    "Mechanical": {
-      "Robotics": ["paper_id8"],
-      "Thermodynamics": ["paper_id9"]
-    },
-    "Civil": {
-      "Structural Engineering": ["paper_id10"],
-      "Transportation": ["paper_id11"]
+    "classification": {
+        "CSE": {
+            "Machine Learning": {
+                "CNN": ["paper_id1", "paper_id2"],
+                "RNN": ["paper_id3"],
+                "SVM": ["paper_id4"]
+            },
+            "Software Engineering": {
+                "Agile": ["paper_id5"],
+                "DevOps": ["paper_id6"]
+            }
+        },
+        "ECE": {
+            "Signal Processing": {
+                "Wavelet": ["paper_id7"],
+                "Fourier": ["paper_id8"]
+            },
+            "Communication Systems": {
+                "5G": ["paper_id9"],
+                "IoT": ["paper_id10"]
+            }
+        },
+        "EEE": {
+            "Power Systems": {
+                "Smart Grid": ["paper_id11"],
+                "Renewable": ["paper_id12"]
+            },
+            "Control Systems": {
+                "PID": ["paper_id13"],
+                "Fuzzy": ["paper_id14"]
+            }
+        },
+        "Mechanical": {
+            "Robotics": {
+                "Kinematics": ["paper_id15"],
+                "Dynamics": ["paper_id16"]
+            },
+            "Thermodynamics": {
+                "Heat Transfer": ["paper_id17"],
+                "Fluid Mechanics": ["paper_id18"]
+            }
+        },
+        "Civil": {
+            "Structural Engineering": {
+                "Concrete": ["paper_id19"],
+                "Steel": ["paper_id20"]
+            },
+            "Transportation": {
+                "Traffic": ["paper_id21"],
+                "Rail": ["paper_id22"]
+            }
+        }
     }
-  }
 }
 """
     return prompt
 
 def create_fallback_classification(papers: List[Paper]) -> Dict[str, Any]:
-    """Create a fallback classification based on keywords when Groq AI is not available"""
-    logger.info("Using fallback keyword-based classification")
+    """Create a fallback classification based on keywords when Groq AI is not available (4 levels)"""
+    logger.info("Using fallback keyword-based classification with 4-level hierarchy")
     
-    # Keyword mappings for different branches
-    branch_keywords = {
-        "CSE": ["software", "algorithm", "computer", "programming", "machine learning", "artificial intelligence", "data", "neural", "deep learning"],
-        "ECE": ["electronics", "circuit", "signal", "communication", "wireless", "antenna", "radio", "frequency", "semiconductor"],
-        "EEE": ["electrical", "power", "energy", "motor", "generator", "control", "automation", "grid", "voltage", "current"],
-        "Mechanical": ["mechanical", "thermal", "fluid", "robotics", "manufacturing", "material", "dynamics", "heat", "engine"],
-        "Civil": ["civil", "structural", "construction", "concrete", "building", "bridge", "transportation", "geotechnical", "environmental"]
+    # Keyword mappings for different branches with subdomains and topics
+    branch_structure = {
+        "CSE": {
+            "Machine Learning": ["neural", "deep learning", "cnn", "rnn", "svm", "classification", "regression"],
+            "Software Engineering": ["software", "programming", "algorithm", "development", "testing"],
+            "Data Science": ["data", "analytics", "big data", "mining", "visualization"],
+            "Computer Vision": ["image", "vision", "opencv", "recognition", "detection"],
+            "Natural Language Processing": ["nlp", "text", "language", "sentiment", "chatbot"]
+        },
+        "ECE": {
+            "Signal Processing": ["signal", "filter", "fourier", "wavelet", "dsp"],
+            "Communication Systems": ["wireless", "antenna", "5g", "iot", "communication"],
+            "Embedded Systems": ["microcontroller", "embedded", "firmware", "real-time"],
+            "VLSI Design": ["vlsi", "chip", "semiconductor", "asic", "fpga"]
+        },
+        "EEE": {
+            "Power Systems": ["power", "grid", "transformer", "generator", "transmission"],
+            "Control Systems": ["control", "pid", "fuzzy", "automation", "feedback"],
+            "Renewable Energy": ["solar", "wind", "renewable", "battery", "energy storage"],
+            "Motor Drives": ["motor", "inverter", "drive", "speed control"]
+        },
+        "Mechanical": {
+            "Robotics": ["robot", "kinematics", "dynamics", "manipulation", "navigation"],
+            "Thermodynamics": ["heat", "thermal", "engine", "thermodynamics", "combustion"],
+            "Manufacturing": ["manufacturing", "machining", "cnc", "automation", "quality"],
+            "Materials": ["material", "composite", "steel", "fatigue", "fracture"]
+        },
+        "Civil": {
+            "Structural Engineering": ["structural", "concrete", "steel", "beam", "column"],
+            "Transportation": ["transportation", "traffic", "highway", "bridge", "rail"],
+            "Geotechnical": ["soil", "foundation", "geotechnical", "slope", "retaining"],
+            "Environmental": ["environmental", "water", "waste", "pollution", "sustainability"]
+        }
     }
     
-    classification = {branch: {} for branch in branch_keywords.keys()}
+    # Initialize 4-level classification structure
+    classification = {}
+    for branch, subdomains in branch_structure.items():
+        classification[branch] = {}
+        for subdomain in subdomains.keys():
+            classification[branch][subdomain] = {
+                "General": []  # Default topic within each subdomain
+            }
     
     for paper in papers:
         # Combine title, abstract, and concepts for keyword matching
         text_content = f"{paper.title} {paper.abstract or ''} {' '.join([concept.name for concept in paper.concepts])}"
         text_content = text_content.lower()
         
-        # Find best matching branch
+        # Find best matching branch and subdomain
         best_branch = "CSE"  # Default
+        best_subdomain = "Machine Learning"  # Default
+        best_topic = "General"  # Default
         max_matches = 0
         
-        for branch, keywords in branch_keywords.items():
-            matches = sum(1 for keyword in keywords if keyword in text_content)
-            if matches > max_matches:
-                max_matches = matches
-                best_branch = branch
+        for branch, subdomains in branch_structure.items():
+            for subdomain, keywords in subdomains.items():
+                matches = sum(1 for keyword in keywords if keyword in text_content)
+                if matches > max_matches:
+                    max_matches = matches
+                    best_branch = branch
+                    best_subdomain = subdomain
         
-        # Create or assign to subcluster
-        subcluster = "General"
+        # For topics, we can use concept names or create more specific categories
         if paper.concepts:
-            # Use the most relevant concept as subcluster name
-            subcluster = paper.concepts[0].name
+            # Use the most relevant concept as topic name, but clean it up
+            concept_name = paper.concepts[0].name
+            # Clean up concept name for better topic grouping
+            if len(concept_name) > 30:
+                concept_name = concept_name[:30] + "..."
+            best_topic = concept_name
         
-        if subcluster not in classification[best_branch]:
-            classification[best_branch][subcluster] = []
+        # Ensure the topic exists in the classification structure
+        if best_topic not in classification[best_branch][best_subdomain]:
+            classification[best_branch][best_subdomain][best_topic] = []
         
-        classification[best_branch][subcluster].append(paper.id)
+        classification[best_branch][best_subdomain][best_topic].append(paper.id)
     
     return build_cluster_structure({"classification": classification}, papers)
 
 def build_cluster_structure(classification_data: Dict, papers: List[Paper]) -> Dict[str, Any]:
-    """Build cluster structure from classification data with unique IDs and proper edges"""
+    """Build cluster structure from classification data with unique IDs and proper edges (4 levels)"""
     papers_dict = {paper.id: paper for paper in papers}
     
     nodes = []
@@ -367,7 +440,7 @@ def build_cluster_structure(classification_data: Dict, papers: List[Paper]) -> D
     # Generate unique IDs for all nodes
     root_id = str(uuid.uuid4())
     
-    # Create root node
+    # Create root node (level 0)
     root_node = ClusterNode(
         id=root_id,
         label="Research Papers",
@@ -378,30 +451,39 @@ def build_cluster_structure(classification_data: Dict, papers: List[Paper]) -> D
     nodes.append(root_node)
     
     branch_nodes = {}
-    subcluster_nodes = {}
+    subdomain_nodes = {}
+    topic_nodes = {}
     
     classification = classification_data.get("classification", {})
     
-    # Create branch nodes (level 1)
-    for branch_name, subclusters in classification.items():
-        if not subclusters:  # Skip empty branches
+    # Create branch nodes (level 1) - Main branches: CSE, ECE, EEE, etc.
+    for branch_name, subdomains in classification.items():
+        if not subdomains:  # Skip empty branches
             continue
             
         branch_id = str(uuid.uuid4())
         branch_papers = []
         
         # Collect all papers in this branch
-        for subcluster_papers in subclusters.values():
-            for paper_id in subcluster_papers:
-                if paper_id in papers_dict:
-                    branch_papers.append(papers_dict[paper_id])
+        for subdomain_topics in subdomains.values():
+            if isinstance(subdomain_topics, dict):
+                for topic_papers in subdomain_topics.values():
+                    if isinstance(topic_papers, list):
+                        for paper_id in topic_papers:
+                            if paper_id in papers_dict:
+                                branch_papers.append(papers_dict[paper_id])
+            elif isinstance(subdomain_topics, list):
+                # Handle legacy format where subdomains directly contain paper IDs
+                for paper_id in subdomain_topics:
+                    if paper_id in papers_dict:
+                        branch_papers.append(papers_dict[paper_id])
         
         branch_node = ClusterNode(
             id=branch_id,
             label=branch_name,
             level=1,
             parent_id=root_id,
-            papers=branch_papers,
+            papers=[],  # Branch nodes don't directly contain papers
             paper_count=len(branch_papers)
         )
         nodes.append(branch_node)
@@ -410,36 +492,116 @@ def build_cluster_structure(classification_data: Dict, papers: List[Paper]) -> D
         # Create edge from root to branch
         edges.append(ClusterEdge(from_node=root_id, to_node=branch_id))
         
-        # Create subcluster nodes (level 2)
-        for subcluster_name, paper_ids in subclusters.items():
-            if not paper_ids:  # Skip empty subclusters
+        # Create subdomain nodes (level 2) - e.g., Machine Learning, Software Engineering
+        for subdomain_name, topics in subdomains.items():
+            if not topics:  # Skip empty subdomains
                 continue
                 
-            subcluster_id = str(uuid.uuid4())
-            subcluster_papers = []
+            subdomain_id = str(uuid.uuid4())
+            subdomain_papers = []
             
-            for paper_id in paper_ids:
-                if paper_id in papers_dict:
-                    subcluster_papers.append(papers_dict[paper_id])
+            # Handle both new format (dict of topics) and legacy format (list of papers)
+            if isinstance(topics, dict):
+                # New format: subdomain contains topics which contain papers
+                for topic_papers in topics.values():
+                    if isinstance(topic_papers, list):
+                        for paper_id in topic_papers:
+                            if paper_id in papers_dict:
+                                subdomain_papers.append(papers_dict[paper_id])
+            elif isinstance(topics, list):
+                # Legacy format: subdomain directly contains paper IDs
+                for paper_id in topics:
+                    if paper_id in papers_dict:
+                        subdomain_papers.append(papers_dict[paper_id])
             
-            if subcluster_papers:  # Only create node if it has papers
-                subcluster_node = ClusterNode(
-                    id=subcluster_id,
-                    label=subcluster_name,
+            if subdomain_papers:  # Only create node if it has papers
+                subdomain_node = ClusterNode(
+                    id=subdomain_id,
+                    label=subdomain_name,
                     level=2,
                     parent_id=branch_id,
-                    papers=subcluster_papers,
-                    paper_count=len(subcluster_papers)
+                    papers=[],  # Subdomain nodes don't directly contain papers
+                    paper_count=len(subdomain_papers)
                 )
-                nodes.append(subcluster_node)
-                subcluster_nodes[f"{branch_name}:{subcluster_name}"] = subcluster_node
+                nodes.append(subdomain_node)
+                subdomain_nodes[f"{branch_name}:{subdomain_name}"] = subdomain_node
                 
-                # Create edge from branch to subcluster
-                edges.append(ClusterEdge(from_node=branch_id, to_node=subcluster_id))
+                # Create edge from branch to subdomain
+                edges.append(ClusterEdge(from_node=branch_id, to_node=subdomain_id))
+                
+                # Create topic nodes (level 3) - e.g., CNN, RNN, SVM
+                if isinstance(topics, dict):
+                    for topic_name, paper_ids in topics.items():
+                        if not paper_ids or not isinstance(paper_ids, list):  # Skip empty topics
+                            continue
+                            
+                        topic_id = str(uuid.uuid4())
+                        topic_papers = []
+                        
+                        for paper_id in paper_ids:
+                            if paper_id in papers_dict:
+                                topic_papers.append(papers_dict[paper_id])
+                        
+                        if topic_papers:  # Only create node if it has papers
+                            topic_node = ClusterNode(
+                                id=topic_id,
+                                label=topic_name,
+                                level=3,
+                                parent_id=subdomain_id,
+                                papers=topic_papers,  # Topic nodes contain the actual papers
+                                paper_count=len(topic_papers)
+                            )
+                            nodes.append(topic_node)
+                            topic_nodes[f"{branch_name}:{subdomain_name}:{topic_name}"] = topic_node
+                            
+                            # Create edge from subdomain to topic
+                            edges.append(ClusterEdge(from_node=subdomain_id, to_node=topic_id))
+                else:
+                    # Legacy format: create a single "General" topic for this subdomain
+                    topic_id = str(uuid.uuid4())
+                    topic_node = ClusterNode(
+                        id=topic_id,
+                        label="General",
+                        level=3,
+                        parent_id=subdomain_id,
+                        papers=subdomain_papers,
+                        paper_count=len(subdomain_papers)
+                    )
+                    nodes.append(topic_node)
+                    topic_nodes[f"{branch_name}:{subdomain_name}:General"] = topic_node
+                    
+                    # Create edge from subdomain to topic
+                    edges.append(ClusterEdge(from_node=subdomain_id, to_node=topic_id))
     
     return {
-        "nodes": [node.__dict__ for node in nodes],
+        "nodes": [serialize_cluster_node(node) for node in nodes],
         "edges": [{"from": edge.from_node, "to": edge.to_node} for edge in edges]
+    }
+
+def serialize_cluster_node(node: ClusterNode) -> Dict[str, Any]:
+    """Serialize a ClusterNode to a dictionary with proper paper serialization"""
+    return {
+        "id": node.id,
+        "label": node.label,
+        "level": node.level,
+        "parent_id": node.parent_id,
+        "papers": [serialize_paper(paper) for paper in node.papers],
+        "paper_count": node.paper_count
+    }
+
+def serialize_paper(paper: Paper) -> Dict[str, Any]:
+    """Serialize a Paper object to a dictionary"""
+    return {
+        "id": paper.id,
+        "title": paper.title,
+        "abstract": paper.abstract,
+        "authors": [{"id": author.id, "name": author.name, "affiliation": author.affiliation} for author in paper.authors],
+        "year": paper.year,
+        "doi": paper.doi,
+        "url": paper.url,
+        "citation_count": paper.citation_count,
+        "concepts": [{"id": concept.id, "name": concept.name, "level": concept.level, "score": concept.score} for concept in paper.concepts],
+        "venue": paper.venue
     }
 
 async def generate_clustered_graph_data(topic: str, count: int = 50) -> Dict[str, Any]:

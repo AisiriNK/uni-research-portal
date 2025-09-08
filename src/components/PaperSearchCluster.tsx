@@ -4,17 +4,26 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
-import { Search, Loader2, Network, ExternalLink, Folder, FileText } from "lucide-react"
-import { getClusterTree, ClusterResponse, ClusterNode } from "@/services/paperClusteringService"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Search, Loader2, Network, ExternalLink, Folder, FileText, PieChart, AlertTriangle, Zap } from "lucide-react"
+import { getClusterTree, ClusterResponse, ClusterNode, ClusterEdge } from "@/services/paperClusteringService"
 import { Paper } from "@/services/openAlexService"
 import { toast } from "@/hooks/use-toast"
+import { HierarchicalTree } from "@/components/HierarchicalTree"
+import { PaperDensityView } from "@/components/PaperDensityView"
+
+import { MOCK_CLUSTER_DATA } from "@/services/mockData"
 
 export function PaperSearchCluster() {
   const [searchQuery, setSearchQuery] = useState("")
   const [loading, setLoading] = useState(false)
   const [clusterData, setClusterData] = useState<ClusterResponse | null>(null)
   const [selectedNode, setSelectedNode] = useState<ClusterNode | null>(null)
+  const [selectedPaper, setSelectedPaper] = useState<Paper | null>(null)
   const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set())
+
+  const [useMockData, setUseMockData] = useState(false);
+  const [backendError, setBackendError] = useState<string | null>(null);
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) {
@@ -29,13 +38,23 @@ export function PaperSearchCluster() {
     setLoading(true)
     setClusterData(null)
     setSelectedNode(null)
+    setBackendError(null)
 
     try {
+      console.log('Fetching cluster data for:', searchQuery);
       const result = await getClusterTree(searchQuery, 50)
+      console.log('Cluster data received:', result);
+      
+      if (!result || !result.nodes || !result.edges || result.nodes.length === 0) {
+        throw new Error('Received empty or invalid cluster data');
+      }
+      
       setClusterData(result)
+      setUseMockData(false)
       
       // Auto-expand root nodes
       const rootNodes = result.nodes.filter(node => node.level === 0)
+      console.log('Root nodes:', rootNodes);
       setExpandedClusters(new Set(rootNodes.map(node => node.id)))
       
       toast({
@@ -43,12 +62,26 @@ export function PaperSearchCluster() {
         description: `Generated ${result.nodes.length} clusters with ${result.edges.length} connections.`,
       })
     } catch (error) {
-      console.error('Error clustering papers:', error)
+      console.error('Error clustering papers:', error);
+      
+      // Set specific error message
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      setBackendError(errorMessage);
+      
       toast({
         title: "Clustering Failed",
-        description: "Failed to cluster papers. Please check your backend connection.",
+        description: "Failed to cluster papers. Using mock data for testing.",
         variant: "destructive",
       })
+      
+      // Use mock data as fallback for development/testing
+      console.log('Using mock data as fallback');
+      setClusterData(MOCK_CLUSTER_DATA as unknown as ClusterResponse);
+      setUseMockData(true);
+      
+      // Auto-expand root nodes from mock data
+      const rootNodes = MOCK_CLUSTER_DATA.nodes.filter(node => node.level === 0);
+      setExpandedClusters(new Set(rootNodes.map(node => node.id)));
     } finally {
       setLoading(false)
     }
@@ -177,22 +210,91 @@ export function PaperSearchCluster() {
           </Card>
         )}
 
+        {backendError && (
+          <Card className="mb-6 border-destructive">
+            <CardContent className="p-4">
+              <div className="flex items-start space-x-2 text-destructive">
+                <AlertTriangle className="h-5 w-5 mt-0.5" />
+                <div>
+                  <h4 className="font-semibold">Backend Error</h4>
+                  <p className="text-sm text-muted-foreground">{backendError}</p>
+                  {useMockData && (
+                    <p className="text-sm mt-2">Using sample data for visualization testing. Connect to a properly configured backend for real data.</p>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {clusterData && !loading && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Cluster Tree */}
+            {/* Cluster Tree with Tabs */}
             <Card className="h-[600px]">
-              <CardHeader>
+              <CardHeader className="pb-2">
                 <CardTitle className="flex items-center">
                   <Network className="mr-2 h-5 w-5" />
                   Research Clusters
+                  {useMockData && <Badge variant="outline" className="ml-2 text-amber-600">DEMO DATA</Badge>}
                 </CardTitle>
                 <CardDescription>
                   Hierarchical organization of {clusterData.nodes.length} clusters
                 </CardDescription>
               </CardHeader>
-              <CardContent className="overflow-y-auto h-full">
-                {getRootNodes().map(node => renderClusterNode(node))}
-              </CardContent>
+              <Tabs defaultValue="tree" className="w-full">
+                <div className="px-6">
+                  <TabsList className="w-full grid grid-cols-3">
+                    <TabsTrigger value="list">
+                      <Folder className="mr-2 h-4 w-4" />
+                      List View
+                    </TabsTrigger>
+                    <TabsTrigger value="tree">
+                      <PieChart className="mr-2 h-4 w-4" />
+                      Tree View
+                    </TabsTrigger>
+                    <TabsTrigger value="density">
+                      <Zap className="mr-2 h-4 w-4" />
+                      Density View
+                    </TabsTrigger>
+                  </TabsList>
+                </div>
+                <TabsContent value="list" className="mt-0">
+                  <CardContent className="overflow-y-auto h-[475px]">
+                    {getRootNodes().map(node => renderClusterNode(node))}
+                  </CardContent>
+                </TabsContent>
+                <TabsContent value="tree" className="mt-0">
+                  <div className="h-[475px] border-t">
+                    {clusterData ? (
+                      <HierarchicalTree 
+                        clusterData={clusterData}
+                        onNodeSelect={setSelectedNode}
+                        selectedNodeId={selectedNode?.id}
+                      />
+                    ) : (
+                      <div className="flex items-center justify-center h-full">
+                        <p className="text-muted-foreground">No cluster data available</p>
+                      </div>
+                    )}
+                  </div>
+                </TabsContent>
+                <TabsContent value="density" className="mt-0">
+                  <div className="h-[475px] border-t">
+                    {clusterData ? (
+                      <PaperDensityView 
+                        clusterData={clusterData}
+                        searchQuery={searchQuery}
+                        onPaperSelect={setSelectedPaper}
+                        selectedPaper={selectedPaper}
+                      />
+                    ) : (
+                      <div className="flex items-center justify-center h-full">
+                        <p className="text-muted-foreground">No cluster data available</p>
+                      </div>
+                    )}
+                  </div>
+                </TabsContent>
+              </Tabs>
             </Card>
 
             {/* Selected Cluster Papers */}
