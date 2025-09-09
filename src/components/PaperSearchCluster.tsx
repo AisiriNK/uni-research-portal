@@ -11,6 +11,7 @@ import { Paper } from "@/services/openAlexService"
 import { toast } from "@/hooks/use-toast"
 import { HierarchicalTree } from "@/components/HierarchicalTree"
 import { PaperDensityView } from "@/components/PaperDensityView"
+import { AIPaperSummary } from "@/components/AIPaperSummary"
 
 import { MOCK_CLUSTER_DATA } from "@/services/mockData"
 
@@ -228,9 +229,9 @@ export function PaperSearchCluster() {
         )}
 
         {clusterData && !loading && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 xl:grid-cols-3 lg:grid-cols-2 gap-6">
             {/* Cluster Tree with Tabs */}
-            <Card className="h-[600px]">
+            <Card className="h-[600px] xl:col-span-1">
               <CardHeader className="pb-2">
                 <CardTitle className="flex items-center">
                   <Network className="mr-2 h-5 w-5" />
@@ -298,7 +299,7 @@ export function PaperSearchCluster() {
             </Card>
 
             {/* Selected Cluster Papers */}
-            <Card className="h-[600px]">
+            <Card className="h-[600px] xl:col-span-1">
               <CardHeader>
                 <CardTitle>
                   {selectedNode ? `Papers in "${selectedNode.label}"` : "Select a Cluster"}
@@ -314,22 +315,34 @@ export function PaperSearchCluster() {
                 {selectedNode && selectedNode.papers.length > 0 ? (
                   <div className="space-y-4">
                     {selectedNode.papers.map((paper) => (
-                      <Card key={paper.id} className="border hover:shadow-md transition-shadow">
+                      <Card 
+                        key={paper.id} 
+                        className={`border hover:shadow-md transition-shadow cursor-pointer ${
+                          selectedPaper?.id === paper.id ? 'ring-2 ring-primary border-primary' : ''
+                        }`}
+                        onClick={() => setSelectedPaper(paper)}
+                      >
                         <CardContent className="p-4">
                           <div className="mb-3">
                             <h3 className="font-bold text-lg leading-relaxed cursor-pointer hover:text-primary transition-colors mb-2 whitespace-normal break-words"
-                                onClick={() => openPaperUrl(paper.url || paper.doi || '')}>
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  openPaperUrl(paper.url || paper.doi || '')
+                                }}>
                               {paper.title || "Untitled Paper"}
                               {(paper.url || paper.doi) && <ExternalLink className="inline ml-1 h-4 w-4" />}
                             </h3>
                             <div className="flex flex-wrap gap-2">
                               <Badge variant="secondary">{paper.year}</Badge>
                               <Badge variant="outline">{paper.citation_count} cites</Badge>
+                              {selectedPaper?.id === paper.id && (
+                                <Badge variant="default">Selected for AI Analysis</Badge>
+                              )}
                             </div>
                           </div>
                           
                           {paper.abstract && (
-                            <p className="text-sm text-muted-foreground mb-3 leading-relaxed whitespace-normal break-words line-clamp-5">
+                            <p className="text-sm text-muted-foreground mb-3 leading-relaxed whitespace-normal break-words line-clamp-3">
                               {paper.abstract}
                             </p>
                           )}
@@ -340,21 +353,26 @@ export function PaperSearchCluster() {
                             <div className="text-muted-foreground flex-1 break-words">
                               <span className="font-medium">Authors: </span>
                               {paper.authors.length > 0 
-                                ? `${paper.authors.slice(0, 3).map(a => a.name).join(", ")}${paper.authors.length > 3 ? ` +${paper.authors.length - 3} more` : ''}`
+                                ? `${paper.authors.slice(0, 2).map(a => a.name).join(", ")}${paper.authors.length > 2 ? ` +${paper.authors.length - 2} more` : ''}`
                                 : 'Unknown authors'}
                             </div>
                             
-                            {(paper.url || paper.doi) && (
-                              <Button 
-                                size="sm" 
-                                variant="outline"
-                                className="flex-shrink-0"
-                                onClick={() => openPaperUrl(paper.url || paper.doi || '')}
-                              >
-                                <ExternalLink className="mr-1 h-3 w-3" />
-                                View
-                              </Button>
-                            )}
+                            <div className="flex gap-2">
+                              {(paper.url || paper.doi) && (
+                                <Button 
+                                  size="sm" 
+                                  variant="outline"
+                                  className="flex-shrink-0"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    openPaperUrl(paper.url || paper.doi || '')
+                                  }}
+                                >
+                                  <ExternalLink className="mr-1 h-3 w-3" />
+                                  View
+                                </Button>
+                              )}
+                            </div>
                           </div>
                         </CardContent>
                       </Card>
@@ -377,6 +395,14 @@ export function PaperSearchCluster() {
                 )}
               </CardContent>
             </Card>
+
+            {/* AI Paper Analysis - Third Column */}
+            <div className="xl:col-span-1 lg:col-span-2 xl:lg:col-span-1">
+              <AIPaperSummary 
+                paper={selectedPaper}
+                onClose={() => setSelectedPaper(null)}
+              />
+            </div>
           </div>
         )}
       </div>
