@@ -34,9 +34,9 @@ export function PaperDensityView({ clusterData, searchQuery, onPaperSelect, sele
 
   const generatePaperPositions = () => {
     const positions: PaperPosition[] = []
-    const containerWidth = 700
+    const containerWidth = 650  // Reduced from 700 to 650
     const containerHeight = 400
-    const centerX = containerWidth / 2
+    const centerX = containerWidth / 2 - 50  // Shift center left by 50px
     const centerY = containerHeight / 2
 
     // Collect all papers from all nodes
@@ -157,7 +157,7 @@ export function PaperDensityView({ clusterData, searchQuery, onPaperSelect, sele
           <div 
             className="absolute w-2 h-2 bg-gray-400 rounded-full opacity-50"
             style={{ 
-              left: '50%', 
+              left: '40%',  // Moved from 50% to 40% to match new center position
               top: '50%', 
               transform: 'translate(-50%, -50%)' 
             }}
@@ -196,38 +196,39 @@ export function PaperDensityView({ clusterData, searchQuery, onPaperSelect, sele
             <div 
               className="absolute z-20 pointer-events-none"
               style={{
-                left: hoveredPaper.x + 20,
-                top: hoveredPaper.y - 10,
-                transform: 'translateY(-50%)'
+                left: hoveredPaper.x,
+                top: hoveredPaper.y < 130 ? hoveredPaper.y + 30 : hoveredPaper.y - 120,  // Show below if too close to top, otherwise above
+                transform: 'translateX(-50%)',  // Center horizontally above/below the node
+                maxWidth: '320px'
               }}
             >
-              <Card className="w-80 shadow-lg">
+              <Card className="w-72 shadow-lg border-2">
                 <CardContent className="p-3">
                   <div className="space-y-2">
-                    <h4 className="text-sm font-semibold line-clamp-2">
+                    <h4 className="text-sm font-semibold line-clamp-2 leading-tight">
                       {hoveredPaper.paper.title || 'Untitled Paper'}
                     </h4>
                     
-                    <div className="flex items-center gap-2 text-xs">
+                    <div className="flex items-center gap-2 text-xs flex-wrap">
                       <Badge variant="secondary">{hoveredPaper.paper.year}</Badge>
                       <Badge variant="outline">{hoveredPaper.paper.citation_count} cites</Badge>
                       <Badge 
+                        className="text-white text-xs"
                         style={{ 
-                          backgroundColor: getHeatmapColor(hoveredPaper.relevanceScore),
-                          color: 'white'
+                          backgroundColor: getHeatmapColor(hoveredPaper.relevanceScore)
                         }}
                       >
                         {Math.round(hoveredPaper.relevanceScore * 100)}% match
                       </Badge>
                     </div>
                     
-                    <p className="text-xs text-muted-foreground line-clamp-3">
+                    <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">
                       {hoveredPaper.paper.abstract || 'No abstract available'}
                     </p>
                     
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-muted-foreground">
-                        Cluster: {hoveredPaper.cluster}
+                    <div className="flex items-center justify-between pt-1">
+                      <span className="text-xs text-muted-foreground truncate">
+                        {hoveredPaper.cluster}
                       </span>
                       {(hoveredPaper.paper.url || hoveredPaper.paper.doi) && (
                         <button
@@ -235,7 +236,7 @@ export function PaperDensityView({ clusterData, searchQuery, onPaperSelect, sele
                             e.stopPropagation()
                             openPaperUrl(hoveredPaper.paper.url || hoveredPaper.paper.doi)
                           }}
-                          className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                          className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1 ml-2"
                         >
                           <ExternalLink className="w-3 h-3" />
                           View
