@@ -12,6 +12,7 @@ import { toast } from "@/hooks/use-toast"
 import { HierarchicalTree } from "@/components/HierarchicalTree"
 import { PaperDensityView } from "@/components/PaperDensityView"
 import { AIPaperSummary } from "@/components/AIPaperSummary"
+import { ResearchGapAnalysis } from "@/components/ResearchGapAnalysis"
 
 import { MOCK_CLUSTER_DATA } from "@/services/mockData"
 
@@ -157,7 +158,7 @@ export function PaperSearchCluster() {
   }
 
   return (
-    <div className="h-full bg-background">
+  <div className="h-full bg-background">
       <div className="p-6">
         <div className="mb-6">
           <h2 className="text-2xl font-bold text-primary mb-2">Paper Search & Clustering</h2>
@@ -260,12 +261,12 @@ export function PaperSearchCluster() {
                   </TabsList>
                 </div>
                 <TabsContent value="list" className="mt-0">
-                  <CardContent className="overflow-y-auto h-[475px]">
+                  <CardContent className="overflow-y-auto h-[1425px]">
                     {getRootNodes().map(node => renderClusterNode(node))}
                   </CardContent>
                 </TabsContent>
                 <TabsContent value="tree" className="mt-0">
-                  <div className="h-[475px] border-t">
+                  <div className="h-[1425px] border-t">
                     {clusterData ? (
                       <HierarchicalTree 
                         clusterData={clusterData}
@@ -280,7 +281,7 @@ export function PaperSearchCluster() {
                   </div>
                 </TabsContent>
                 <TabsContent value="density" className="mt-0">
-                  <div className="h-[475px] border-t">
+                  <div className="h-[1425px] border-t">
                     {clusterData ? (
                       <PaperDensityView 
                         clusterData={clusterData}
@@ -300,16 +301,48 @@ export function PaperSearchCluster() {
 
             {/* Selected Cluster Papers or AI Analysis */}
             {selectedPaper ? (
-              /* AI Paper Analysis - Full Column */
+              /* AI Analysis with Tabs - Full Column */
               <div className="lg:col-span-1">
-                <AIPaperSummary 
-                  paper={selectedPaper}
-                  onClose={() => setSelectedPaper(null)}
-                />
+                <Card className="h-[1800px] overflow-hidden">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-lg">AI Analysis</CardTitle>
+                    <CardDescription>
+                      Advanced AI-powered analysis for: {selectedPaper.title.slice(0, 60)}...
+                    </CardDescription>
+                  </CardHeader>
+                  <Tabs defaultValue="summary" className="flex-1 flex flex-col">
+                    <div className="px-6">
+                      <TabsList className="grid w-full grid-cols-2">
+                        <TabsTrigger value="summary">
+                          AI Summary
+                        </TabsTrigger>
+                        <TabsTrigger value="gaps">
+                          Research Gaps
+                        </TabsTrigger>
+                      </TabsList>
+                    </div>
+                    <TabsContent value="summary" className="flex-1 mt-0">
+                      <div className="h-full">
+                        <AIPaperSummary 
+                          paper={selectedPaper}
+                          onClose={() => setSelectedPaper(null)}
+                        />
+                      </div>
+                    </TabsContent>
+                    <TabsContent value="gaps" className="flex-1 mt-0">
+                      <div className="h-full">
+                        <ResearchGapAnalysis
+                          paper={selectedPaper}
+                          onClose={() => setSelectedPaper(null)}
+                        />
+                      </div>
+                    </TabsContent>
+                  </Tabs>
+                </Card>
               </div>
             ) : (
               /* Selected Cluster Papers */
-              <Card className="h-[600px]">
+              <Card className="h-[1800px]">
                 <CardHeader>
                   <CardTitle>
                     {selectedNode ? `Papers in "${selectedNode.label}"` : "Select a Cluster"}
