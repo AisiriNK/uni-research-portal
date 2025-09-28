@@ -5,12 +5,14 @@ import {
   CheckCircle, 
   ClipboardCheck,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Network
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 const navigation = [
   { name: "Research Hub", href: "#research", icon: BookOpen },
+  { name: "Paper Clustering", href: "#clustering", icon: Network },
   { name: "AI Report Formatter", href: "#formatter", icon: FileText },
   { name: "Approvals & Printing", href: "#approvals", icon: CheckCircle },
   { name: "No-Due Clearance", href: "#clearance", icon: ClipboardCheck },
