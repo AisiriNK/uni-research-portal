@@ -6,6 +6,7 @@ import { ResearchHub } from "@/components/ResearchHub"
 import { AIReportFormatter } from "@/components/AIReportFormatter"
 import { ApprovalsPrinting } from "@/components/ApprovalsPrinting"
 import { NoDueClearance } from "@/components/NoDueClearance"
+import { PaperSearchCluster } from "@/components/PaperSearchCluster"
 
 const Index = () => {
   const [activeSection, setActiveSection] = useState("research")
@@ -14,6 +15,8 @@ const Index = () => {
     switch (activeSection) {
       case "research":
         return <ResearchHub />
+      case "clustering":
+        return <PaperSearchCluster />
       case "formatter":
         return <AIReportFormatter />
       case "approvals":
@@ -44,3 +47,4 @@ const Index = () => {
 };
 
 export default Index;
+
