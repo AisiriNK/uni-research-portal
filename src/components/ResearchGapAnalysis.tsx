@@ -52,7 +52,7 @@ export function ResearchGapAnalysis({ paper, onClose }: ResearchGapAnalysisProps
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error'
       setDebugInfo(prev => [...prev, `❌ Groq AI test failed: ${errorMsg}`])
-      
+      console.log('Groq AI test error:', error)
       toast({
         title: "Groq AI Test Failed",
         description: "Please ensure you have set the VITE_GROQ_API_KEY environment variable.",
