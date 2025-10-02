@@ -1,8 +1,11 @@
 // Gemini AI Service for paper summarization
 import { GoogleGenerativeAI } from '@google/generative-ai'
 
-// Initialize Gemini AI
+// Initialize Gemini AI with v1 API
 const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY || '')
+
+// Choose the model (use gemini-1.5-flash for faster summaries if preferred)
+const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
 
 export interface PaperSummary {
   overview: string
@@ -16,25 +19,35 @@ export interface PaperSummary {
 
 /**
  * Generate a comprehensive paper summary using Gemini AI
- * @param paper - Paper object with title, abstract, etc.
- * @returns Promise with structured summary
  */
 export async function summarizePaper(paper: any): Promise<PaperSummary> {
-  try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
+  console.log('Using Gemini AI for paper summarization')
 
+  try {
     const prompt = createSummarizationPrompt(paper)
-    
-    const result = await model.generateContent(prompt)
-    const response = await result.response
-    const text = response.text()
-    
-    // Parse the structured response
-    return parseSummaryResponse(text)
-    
+
+    const result = await model.generateContent({
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: prompt }]
+        }
+      ],
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 4096
+      }
+    })
+
+    const response = result.response.text()
+    console.log('Successfully generated summary using Gemini AI')
+    return parseSummaryResponse(response)
+
   } catch (error) {
-    console.error('Error generating paper summary:', error)
-    throw new Error(`Failed to generate summary: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    console.error('Error generating paper summary with Gemini:', error)
+    throw new Error(
+      `Failed to generate summary: ${error instanceof Error ? error.message : 'Unknown error'}`
+    )
   }
 }
 
@@ -85,55 +98,63 @@ Please respond with valid JSON only.
  */
 function parseSummaryResponse(response: string): PaperSummary {
   try {
-    // Clean the response to extract JSON
     const jsonMatch = response.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) {
-      throw new Error('No valid JSON found in response')
-    }
-    
+    if (!jsonMatch) throw new Error('No valid JSON found in response')
+
     const parsed = JSON.parse(jsonMatch[0])
-    
-    // Helper function to clean "not specified" responses
+
     const cleanNotSpecified = (value: string | string[]): string | string[] => {
       if (Array.isArray(value)) {
-        return value.filter(item => 
-          !item.toLowerCase().includes('not specified') &&
-          !item.toLowerCase().includes('not available') &&
-          item.trim().length > 0
+        return value.filter(
+          item =>
+            !item.toLowerCase().includes('not specified') &&
+            !item.toLowerCase().includes('not available') &&
+            item.trim().length > 0
         )
       }
-      if (typeof value === 'string' && (
-        value.toLowerCase().includes('not specified') ||
-        value.toLowerCase().includes('not available') ||
-        value.trim().length === 0
-      )) {
+      if (
+        typeof value === 'string' &&
+        (value.toLowerCase().includes('not specified') ||
+          value.toLowerCase().includes('not available') ||
+          value.trim().length === 0)
+      ) {
         return ''
       }
       return value
     }
-    
-    // Validate required fields and provide intelligent defaults
-    const cleanedTechniques = cleanNotSpecified(parsed.techniques || []) as string[]
-    const cleanedAdvantages = cleanNotSpecified(parsed.advantages || []) as string[]
-    const cleanedLimitations = cleanNotSpecified(parsed.limitations || []) as string[]
-    const cleanedKeyFindings = cleanNotSpecified(parsed.keyFindings || []) as string[]
-    const cleanedMethodology = cleanNotSpecified(parsed.methodology || '') as string
-    const cleanedFutureWork = cleanNotSpecified(parsed.futureWork || '') as string
-    
+
     return {
-      overview: parsed.overview || 'This paper presents research findings that contribute to the field of study.',
-      techniques: cleanedTechniques.length > 0 ? cleanedTechniques : ['Research methodology based on available literature'],
-      advantages: cleanedAdvantages.length > 0 ? cleanedAdvantages : ['Contributes to scientific knowledge and understanding'],
-      limitations: cleanedLimitations.length > 0 ? cleanedLimitations : ['Limitations to be explored in future research'],
-      keyFindings: cleanedKeyFindings.length > 0 ? cleanedKeyFindings : ['Significant research findings presented in this work'],
-      methodology: cleanedMethodology || 'Methodology details available in the full paper',
-      futureWork: cleanedFutureWork || 'Future research directions to be explored based on these findings'
+      overview:
+        parsed.overview ||
+        'This paper presents research findings that contribute to the field of study.',
+      techniques:
+        (cleanNotSpecified(parsed.techniques || []) as string[]).length > 0
+          ? (cleanNotSpecified(parsed.techniques || []) as string[])
+          : ['Research methodology based on available literature'],
+      advantages:
+        (cleanNotSpecified(parsed.advantages || []) as string[]).length > 0
+          ? (cleanNotSpecified(parsed.advantages || []) as string[])
+          : ['Contributes to scientific knowledge and understanding'],
+      limitations:
+        (cleanNotSpecified(parsed.limitations || []) as string[]).length > 0
+          ? (cleanNotSpecified(parsed.limitations || []) as string[])
+          : ['Limitations to be explored in future research'],
+      keyFindings:
+        (cleanNotSpecified(parsed.keyFindings || []) as string[]).length > 0
+          ? (cleanNotSpecified(parsed.keyFindings || []) as string[])
+          : ['Significant research findings presented in this work'],
+      methodology:
+        (cleanNotSpecified(parsed.methodology || '') as string) ||
+        'Methodology details available in the full paper',
+      futureWork:
+        (cleanNotSpecified(parsed.futureWork || '') as string) ||
+        'Future research directions to be explored based on these findings'
     }
   } catch (error) {
     console.error('Error parsing summary response:', error)
-    // Return fallback summary
     return {
-      overview: 'Unable to generate detailed summary. Please check the paper content and try again.',
+      overview:
+        'Unable to generate detailed summary. Please check the paper content and try again.',
       techniques: ['Analysis requires full paper access'],
       advantages: ['Potential benefits to be determined from full paper'],
       limitations: ['Detailed evaluation needed'],
@@ -147,18 +168,17 @@ function parseSummaryResponse(response: string): PaperSummary {
 /**
  * Generate a quick summary for multiple papers (batch processing)
  */
-export async function generateQuickSummaries(papers: any[]): Promise<Map<string, string>> {
+export async function generateQuickSummaries(
+  papers: any[]
+): Promise<Map<string, string>> {
   const summaries = new Map<string, string>()
-  
+
   try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
-    
-    // Process papers in batches of 5 to avoid rate limits
-    const batchSize = 5
+    const batchSize = 3
     for (let i = 0; i < papers.length; i += batchSize) {
       const batch = papers.slice(i, i + batchSize)
-      
-      const promises = batch.map(async (paper) => {
+
+      const promises = batch.map(async paper => {
         try {
           const quickPrompt = `
 Provide a 2-sentence summary of this research paper:
@@ -167,28 +187,40 @@ Abstract: ${paper.abstract?.substring(0, 500) || 'No abstract'}
 
 Focus on: What problem it solves and what the main contribution is.
 `
-          const result = await model.generateContent(quickPrompt)
-          const response = await result.response
-          return { id: paper.id, summary: response.text().trim() }
+
+          const result = await model.generateContent({
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: quickPrompt }]
+              }
+            ],
+            generationConfig: {
+              temperature: 0.5,
+              maxOutputTokens: 200
+            }
+          })
+
+          const response = result.response.text()
+          return { id: paper.id, summary: response.trim() || 'Summary generation failed' }
         } catch (error) {
           console.error(`Error summarizing paper ${paper.id}:`, error)
           return { id: paper.id, summary: 'Summary generation failed' }
         }
       })
-      
+
       const batchResults = await Promise.all(promises)
       batchResults.forEach(({ id, summary }) => {
         summaries.set(id, summary)
       })
-      
-      // Add delay between batches to respect rate limits
+
       if (i + batchSize < papers.length) {
-        await new Promise(resolve => setTimeout(resolve, 1000))
+        await new Promise(resolve => setTimeout(resolve, 1500))
       }
     }
   } catch (error) {
     console.error('Error in batch summary generation:', error)
   }
-  
+
   return summaries
 }
