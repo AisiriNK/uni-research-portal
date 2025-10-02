@@ -8,6 +8,7 @@ function getGroqClient(): Groq {
   if (!groqClient) {
     const apiKey = import.meta.env.VITE_GROQ_API_KEY
     if (!apiKey) {
+      console.log("VITE_GROQ_API_KEY is missing")
       throw new Error('VITE_GROQ_API_KEY environment variable is required')
     }
     groqClient = new Groq({
@@ -212,10 +213,13 @@ Important: Return valid JSON only, no additional text or formatting.`
   ]
 
   try {
+    console.log('Generating research gaps with Groq AI...')
     const response = await generateChatCompletion(messages, {
       temperature: 0.8,
       maxTokens: 3072
     })
+
+    console.log('Groq response received:', response.substring(0, 200) + '...')
 
     // Try to parse JSON from the response
     let gaps: any[] = []
@@ -235,12 +239,15 @@ Important: Return valid JSON only, no additional text or formatting.`
         throw new Error('Response is not an array')
       }
       
+      console.log(`Successfully parsed ${gaps.length} research gaps`)
+      
     } catch (parseError) {
       console.warn('Failed to parse Groq JSON response:', parseError)
       console.warn('Raw response:', response)
       
       // Fallback: create basic gaps from text response
       gaps = createFallbackGaps(response, context.basePaper.title)
+      console.log(`Created ${gaps.length} fallback gaps`)
     }
 
     return gaps.map((gap: any) => ({
