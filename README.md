@@ -1,4 +1,59 @@
-# Welcome to your Lovable project
+# University Research Portal
+
+A comprehensive research discovery platform with AI-powered paper analysis and research gap identification.
+
+## 🔬 Features
+
+### **Research Paper Clustering**
+- **Hierarchical Organization**: 4-level clustering (Root → Branches → Subdomains → Topics)
+- **Multiple Views**: List, Tree, and Density visualization modes
+- **OpenAlex Integration**: Access to millions of academic papers
+- **Smart Filtering**: Relevance-based paper positioning
+
+### **AI-Powered Analysis**
+- **Paper Summarization**: Comprehensive insights using Gemini AI
+  - Technical overview and key findings
+  - Methodology and research techniques
+  - Advantages, limitations, and future directions
+- **Research Gap Discovery**: Identify unexplored opportunities using Ollama AI
+  - Related literature analysis
+  - Gap validation against existing work
+  - Confidence scoring and categorization
+
+### **Interactive Visualization**
+- **Density Heatmaps**: Papers positioned by relevance with color-coding
+- **Hierarchical Trees**: Expandable cluster navigation
+- **Paper Details**: Rich tooltips with abstracts and metadata
+
+## 🚀 Quick Start
+
+### Prerequisites
+- Node.js & npm ([install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating))
+- **For AI Features**:
+  - Gemini API key (for paper summarization)
+  - Ollama with Llama 3.2 (for research gap analysis)
+
+### Installation
+
+```sh
+# Clone the repository
+git clone <YOUR_GIT_URL>
+cd <YOUR_PROJECT_NAME>
+
+# Install dependencies
+npm install
+
+# Set up environment variables
+cp .env.example .env
+# Add your Gemini API key to .env
+
+# Start development server
+npm run dev
+```
+
+### AI Setup
+1. **Gemini AI**: Get API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
+2. **Ollama**: Follow setup in [RESEARCH_GAP_SETUP.md](RESEARCH_GAP_SETUP.md)
 
 ## Project info
 
