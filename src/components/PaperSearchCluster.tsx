@@ -243,16 +243,12 @@ export function PaperSearchCluster() {
                   Hierarchical organization of {clusterData.nodes.length} clusters
                 </CardDescription>
               </CardHeader>
-              <Tabs defaultValue="tree" className="w-full">
+              <Tabs defaultValue="list" className="w-full">
                 <div className="px-6">
-                  <TabsList className="w-full grid grid-cols-3">
+                  <TabsList className="w-full grid grid-cols-2">
                     <TabsTrigger value="list">
                       <Folder className="mr-2 h-4 w-4" />
                       List View
-                    </TabsTrigger>
-                    <TabsTrigger value="tree">
-                      <PieChart className="mr-2 h-4 w-4" />
-                      Tree View
                     </TabsTrigger>
                     <TabsTrigger value="density">
                       <Zap className="mr-2 h-4 w-4" />
@@ -261,27 +257,12 @@ export function PaperSearchCluster() {
                   </TabsList>
                 </div>
                 <TabsContent value="list" className="mt-0">
-                  <CardContent className="overflow-y-auto h-[1425px]">
+                  <CardContent className="overflow-y-auto h-[450px]">
                     {getRootNodes().map(node => renderClusterNode(node))}
                   </CardContent>
                 </TabsContent>
-                <TabsContent value="tree" className="mt-0">
-                  <div className="h-[1425px] border-t">
-                    {clusterData ? (
-                      <HierarchicalTree 
-                        clusterData={clusterData}
-                        onNodeSelect={setSelectedNode}
-                        selectedNodeId={selectedNode?.id}
-                      />
-                    ) : (
-                      <div className="flex items-center justify-center h-full">
-                        <p className="text-muted-foreground">No cluster data available</p>
-                      </div>
-                    )}
-                  </div>
-                </TabsContent>
                 <TabsContent value="density" className="mt-0">
-                  <div className="h-[1425px] border-t">
+                  <div className="h-[450px] border-t">
                     {clusterData ? (
                       <PaperDensityView 
                         clusterData={clusterData}

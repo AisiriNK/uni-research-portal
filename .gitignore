@@ -11,6 +11,9 @@ node_modules
 dist
 dist-ssr
 *.local
+ 
+# Ignore backend virtual environment
+backend/venv/
 
 .env
 

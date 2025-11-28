@@ -16,7 +16,8 @@ import {
   Zap,
   TrendingUp,
   FileText,
-  ExternalLink 
+  ExternalLink,
+  ArrowLeft 
 } from 'lucide-react'
 import { summarizePaper, PaperSummary } from '@/services/geminiService'
 import { Paper } from '@/services/openAlexService'
@@ -83,6 +84,17 @@ export function AIPaperSummary({ paper, onClose }: AIPaperSummaryProps) {
       {/* Header with action buttons */}
       <div className="p-4 border-b flex-shrink-0">
         <div className="flex gap-2">
+          {onClose && (
+            <Button 
+              onClick={onClose} 
+              variant="outline"
+              size="icon"
+              className="flex items-center gap-2"
+              title="Back to paper details"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+          )}
           <Button 
             onClick={generateSummary} 
             disabled={loading}
