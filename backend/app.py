@@ -5,7 +5,7 @@ Integrates OpenAlex API for paper fetching and Groq AI for intelligent clusterin
 
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any
 import json
@@ -282,170 +282,576 @@ def load_latex_template():
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="LaTeX template not found")
 
-def process_document_content_with_groq(content: str) -> List[ChapterData]:
-    """Process document content using Groq AI to extract chapters"""
+def parse_docx_into_chapters(content: str) -> List[dict]:
+    """
+    Parse document content into chapters using regex pattern 'CHAPTER *'
+    Returns list of chapters with placeholders for images, properly ordered
+    """
+    import re
+    
+    logger.info(f"Starting chapter parsing. Content length: {len(content)} characters")
+    
+    # Enhanced chapter detection patterns
+    chapter_patterns = [
+        r'(?i)CHAPTER\s+(\d+)[:\-\.\s]*([^\n]*)',  # CHAPTER 1: Title or CHAPTER 1 Title
+        r'(?i)CHAPTER\s*[:\-\.]?\s*(\d+)[:\-\.\s]*([^\n]*)',  # CHAPTER: 1 Title
+        r'(?i)(\d+)\.\s*CHAPTER[:\-\.\s]*([^\n]*)',  # 1. CHAPTER: Title
+        r'(?i)CHAPTER\s*([IVXLCDM]+)[:\-\.\s]*([^\n]*)',  # CHAPTER I: Title (Roman numerals)
+    ]
+    
+    # Find all chapter matches with their positions
+    chapter_matches = []
+    
+    for pattern in chapter_patterns:
+        matches = re.finditer(pattern, content, re.MULTILINE)
+        for match in matches:
+            # Extract chapter number and title
+            groups = match.groups()
+            if len(groups) >= 2:
+                chapter_num_str = groups[0].strip()
+                chapter_title = groups[1].strip()
+                
+                # Convert Roman numerals to integers if needed
+                if re.match(r'^[IVXLCDM]+$', chapter_num_str.upper()):
+                    chapter_num = roman_to_int(chapter_num_str.upper())
+                else:
+                    try:
+                        chapter_num = int(chapter_num_str)
+                    except ValueError:
+                        continue
+                
+                chapter_matches.append({
+                    'start_pos': match.start(),
+                    'end_pos': match.end(),
+                    'chapter_number': chapter_num,
+                    'title': chapter_title if chapter_title else f"Chapter {chapter_num}",
+                    'match_text': match.group(0)
+                })
+    
+    # If no specific chapter patterns found, try a simpler approach
+    if not chapter_matches:
+        logger.info("No specific chapter patterns found, trying simpler approach")
+        simple_pattern = r'(?i)(CHAPTER[^\n]*)'
+        matches = re.finditer(simple_pattern, content, re.MULTILINE)
+        for i, match in enumerate(matches):
+            chapter_matches.append({
+                'start_pos': match.start(),
+                'end_pos': match.end(),
+                'chapter_number': i + 1,
+                'title': match.group(1).strip(),
+                'match_text': match.group(0)
+            })
+    
+    # Sort chapters by their position in the document
+    chapter_matches.sort(key=lambda x: x['start_pos'])
+    
+    logger.info(f"Found {len(chapter_matches)} chapter markers")
+    
+    if not chapter_matches:
+        # No chapters found, treat entire document as single chapter
+        logger.info("No chapters detected, treating as single document")
+        return [{
+            'chapter_number': 1,
+            'title': 'Document Content',
+            'content': process_chapter_content(content, 1),
+            'image_count': count_images_in_content(content)
+        }]
+    
+    parsed_chapters = []
+    
+    for i, chapter_match in enumerate(chapter_matches):
+        # Determine chapter content boundaries
+        content_start = chapter_match['end_pos']
+        
+        # Content ends at the start of next chapter or end of document
+        if i + 1 < len(chapter_matches):
+            content_end = chapter_matches[i + 1]['start_pos']
+        else:
+            content_end = len(content)
+        
+        # Extract chapter content
+        chapter_content = content[content_start:content_end].strip()
+        
+        # Process the content (handle images, clean formatting)
+        processed_content = process_chapter_content(chapter_content, chapter_match['chapter_number'])
+        
+        # Count images in this chapter
+        image_count = count_images_in_content(processed_content)
+        
+        parsed_chapters.append({
+            'chapter_number': chapter_match['chapter_number'],
+            'title': clean_chapter_title(chapter_match['title']),
+            'content': processed_content,
+            'image_count': image_count
+        })
+        
+        logger.info(f"Parsed Chapter {chapter_match['chapter_number']}: {chapter_match['title'][:50]}... ({len(processed_content)} chars, {image_count} images)")
+    
+    # Sort chapters by chapter number to ensure proper order
+    parsed_chapters.sort(key=lambda x: x['chapter_number'])
+    
+    logger.info(f"Successfully parsed {len(parsed_chapters)} chapters in correct order")
+    return parsed_chapters
+
+def roman_to_int(roman: str) -> int:
+    """Convert Roman numeral to integer"""
+    roman_numerals = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
+    result = 0
+    prev_value = 0
+    
+    for char in reversed(roman):
+        value = roman_numerals.get(char, 0)
+        if value < prev_value:
+            result -= value
+        else:
+            result += value
+        prev_value = value
+    
+    return result
+
+def clean_chapter_title(title: str) -> str:
+    """Clean and format chapter title"""
+    if not title:
+        return "Untitled Chapter"
+    
+    # Remove common prefixes and clean up
+    title = re.sub(r'^[:\-\.\s]+', '', title).strip()
+    title = re.sub(r'[:\-\.\s]+$', '', title).strip()
+    
+    # Remove chapter number if it appears at the start
+    title = re.sub(r'^\d+[\.\:\-\s]*', '', title).strip()
+    
+    if not title:
+        return "Untitled Chapter"
+    
+    return title
+
+def process_chapter_content(content: str, chapter_num: int) -> str:
+    """Process chapter content to handle images and formatting"""
+    if not content:
+        return ""
+    
+    # Replace image references with standardized placeholders
+    image_counter = 1
+    
+    # Enhanced image detection patterns
+    image_patterns = [
+        r'(?i)\[image[:\s]*([^\]]*)\]',  # [image: description]
+        r'(?i)\[fig[ure]*[:\s]*([^\]]*)\]',  # [figure: description]  
+        r'(?i)\[insert\s+image[:\s]*([^\]]*)\]',  # [insert image: description]
+        r'(?i)<image[^>]*>([^<]*)</image>',  # <image>description</image>
+        r'(?i)\{image[:\s]*([^\}]*)\}',  # {image: description}
+        r'(?i)image\s*\d*[:\s]*([^\n]*)',  # image: description
+        r'(?i)figure\s*\d*[:\s]*([^\n]*)',  # figure: description
+    ]
+    
+    for pattern in image_patterns:
+        def replace_image(match):
+            nonlocal image_counter
+            caption = match.group(1).strip() if match.group(1) else f"Image {image_counter}"
+            # Clean up caption
+            caption = re.sub(r'^[:\-\.\s]+', '', caption).strip()
+            if not caption:
+                caption = f"Chapter {chapter_num} Image {image_counter}"
+            
+            placeholder = f'[IMAGE:{chapter_num}_{image_counter} caption="{caption}"]'
+            image_counter += 1
+            return placeholder
+        
+        content = re.sub(pattern, replace_image, content)
+    
+    # Clean up extra whitespace and formatting
+    content = re.sub(r'\n\s*\n\s*\n', '\n\n', content)  # Multiple newlines to double
+    content = re.sub(r'[ \t]+', ' ', content)  # Multiple spaces to single
+    content = content.strip()
+    
+    return content
+
+def count_images_in_content(content: str) -> int:
+    """Count image placeholders in content"""
+    import re
+    pattern = r'\[IMAGE:\d+_\d+[^\]]*\]'
+    matches = re.findall(pattern, content)
+    return len(matches)
+
+def convert_chapter_to_latex_with_ai(chapter_data: dict) -> str:
+    """
+    Convert a single chapter content to LaTeX format for template insertion
+    Returns formatted content ready to be inserted into {{ chapter_content }} placeholder
+    """
     try:
         from groq import Groq
         
         if not GROQ_API_KEY:
             logger.error("Groq API key not configured")
-            raise HTTPException(status_code=500, detail="Groq API key not configured. Please set GROQ_API_KEY in your .env file.")
+            raise HTTPException(status_code=500, detail="Groq API key not configured")
         
         client = Groq(api_key=GROQ_API_KEY)
         
-        # Enhanced prompt for LaTeX document processing
-        structure_prompt = f"""
-You are given a document content that you must process for LaTeX template generation. 
-The LaTeX template defines the formatting for a report with chapters, headers, footers, 
-and styles. Your task is to automatically generate structured chapter data 
-for use with this template.
+        chapter_num = chapter_data['chapter_number']
+        title = chapter_data['title']
+        content = chapter_data['content']
+        
+        conversion_prompt = f"""
+You are a LaTeX content formatter. Your job is to format chapter content that will be inserted into an existing LaTeX template.
 
-DOCUMENT CONTENT:
-{content[:8000]}... (content may be truncated for analysis, but full content will be processed)
+TEMPLATE CONTEXT:
+The content will be inserted into this template structure:
+```
+\\section*{{CHAPTER {chapter_num}: {title.upper()}}}
+\\setcounter{{figure}}{{0}}
+\\vspace{{1cm}}
+\\fontsize{{12}}{{18}}\\selectfont\\setstretch{{1.5}}
+{{ YOUR_FORMATTED_CONTENT_GOES_HERE }}
+```
 
-INSTRUCTIONS:
+CHAPTER INFORMATION:
+- Chapter Number: {chapter_num}
+- Chapter Title: {title}
 
-1. Template Usage:
-   - Use the provided LaTeX template exactly as the formatting base
-   - Keep all style settings unchanged
-   - Replace placeholders like {{ chapter_number }}, {{ chapter_title }}, and {{ chapter_content }} with extracted contents
+CONTENT TO FORMAT:
+{content}
 
-2. Chapter Handling:
-   - Detect chapters based on "Chapter X" or "CHAPTER X:" patterns
-   - Assign sequential numbers (1, 2, 3 …)
-   - Continue page numbers across chapters without resetting
+FORMATTING REQUIREMENTS:
 
-3. Content Replacement:
-   - Replace {{ chapter_title }} with the chapter's title
-   - Replace {{ chapter_content }} with LaTeX-compatible text
-   - Ensure each chapter has proper paragraph breaks (\\n\\n)
+1. **LaTeX Text Formatting**:
+   - Use proper LaTeX paragraph breaks (double newlines \\n\\n)
+   - Escape special characters: & → \\&, % → \\%, $ → \\$, # → \\#, _ → \\_
+   - Use \\textbf{{text}} for bold, \\textit{{text}} for italics
+   - Use \\texttt{{text}} for code/monospace
+   - Format lists with \\begin{{itemize}}...\\end{{itemize}} or \\begin{{enumerate}}...\\end{{enumerate}}
 
-4. Figures and Images:
-   - Detect any image references (figures, diagrams, charts, screenshots)
-   - Each image must be represented with metadata:
-       {
-         "filename": "image_filename.png",
-         "caption": "Descriptive caption without numbering",
-         "image_number": 1
-       }
-   - Do NOT add "Fig. X.Y" inside the caption text. 
-   - Only supply a plain descriptive caption. The LaTeX template will automatically prepend "Fig. X.Y".
+2. **Image Handling**:
+   - Find all [IMAGE:X_Y caption="..."] placeholders
+   - Replace with inline LaTeX figures at the EXACT position:
+   ```
+   \\begin{{figure}}[h]
+       \\centering
+       \\includegraphics[width=0.8\\textwidth]{{images/chapter{chapter_num}_image[Y].png}}
+       \\caption{{[CAPTION_TEXT]}}
+       \\label{{fig:chapter{chapter_num}_image[Y]}}
+   \\end{{figure}}
+   ```
+   - LaTeX will automatically number figures as Fig. {chapter_num}.1, {chapter_num}.2, etc.
 
-5. Content Analysis:
-   - If no explicit chapters exist, divide logically into Introduction, Literature Review, Methodology, Results, Discussion, Conclusion
-   - Ensure each chapter is substantial (min 100 words if possible)
+3. **Content Structure**:
+   - Format as professional academic content
+   - Maintain logical paragraph flow
+   - Insert figures where they make sense contextually
+   - Use proper spacing and formatting
 
-REQUIRED OUTPUT FORMAT:
-Return ONLY valid JSON array of chapter objects:
+4. **Output Requirements**:
+   - Return ONLY the formatted content (no section headers, no document structure)
+   - Content should be ready to insert into the template's {{ chapter_content }} placeholder
+   - No explanations or additional text
 
-[
-  {
-    "title": "Introduction",
-    "content": "LaTeX-ready text with escaped characters and paragraph breaks (\\n\\n)",
-    "images": [
-      {
-        "filename": "intro_diagram.png",
-        "caption": "System Architecture Diagram",
-        "image_number": 1
-      }
-    ]
-  },
-  {
-    "title": "Methodology",
-    "content": "Second chapter content...",
-    "images": [
-      {
-        "filename": "workflow.png",
-        "caption": "Workflow of Proposed Method",
-        "image_number": 1
-      },
-      {
-        "filename": "pipeline.png",
-        "caption": "Data Processing Pipeline",
-        "image_number": 2
-      }
-    ]
-  }
-]
+EXAMPLE:
+Input: "This describes the system. [IMAGE:1_1 caption="System Architecture"] The architecture consists of multiple components."
 
-CRITICAL REQUIREMENTS:
-- Extract ALL chapters
-- Maintain academic structure and flow
-- Figures must be numbered in order per chapter (X.Y) by the LaTeX template, not in JSON
-- JSON must include image_number for ordering
-- Provide captions as plain descriptive text
-- Return ONLY valid JSON, no explanations or extra text
+Output:
+This describes the system.
 
+\\begin{{figure}}[h]
+    \\centering
+    \\includegraphics[width=0.8\\textwidth]{{images/chapter1_image1.png}}
+    \\caption{{System Architecture}}
+    \\label{{fig:chapter1_image1}}
+\\end{{figure}}
+
+The architecture consists of multiple components.
+
+Now format the provided content:
 """
 
-        structure_response = client.chat.completions.create(
+        response = client.chat.completions.create(
             messages=[
-                {"role": "system", "content": "You are an expert LaTeX document processor and structure analyzer. You specialize in converting academic documents into properly formatted LaTeX reports with multiple chapters. Return only valid JSON that matches the specified format exactly."},
-                {"role": "user", "content": structure_prompt}
+                {"role": "system", "content": "You are an expert LaTeX formatter. Format academic content for insertion into LaTeX templates. Return only formatted LaTeX content, no explanations."},
+                {"role": "user", "content": conversion_prompt}
             ],
             model="llama-3.3-70b-versatile",
-            temperature=0.2,
-            max_tokens=4000,
-            timeout=30  # 30 second timeout
+            temperature=0.1,
+            max_tokens=2000,
+            timeout=30
         )
         
-        # Parse the response
-        import re
-        response_text = structure_response.choices[0].message.content
-        logger.info(f"Groq response received: {response_text[:200]}...")
+        latex_content = response.choices[0].message.content.strip()
+        logger.info(f"Successfully formatted chapter {chapter_num} content for template ({len(latex_content)} chars)")
         
-        # Try to extract JSON from the response
-        json_match = re.search(r'\[[\s\S]*\]', response_text)
+        return latex_content
         
-        if json_match:
-            try:
-                chapters_data = json.loads(json_match.group())
-                logger.info(f"Successfully parsed {len(chapters_data)} chapters from document")
-                
-                # Validate and create ChapterData objects
-                validated_chapters = []
-                for i, chapter in enumerate(chapters_data):
-                    try:
-                        # Ensure required fields exist
-                        if not isinstance(chapter, dict):
-                            continue
-                        
-                        title = chapter.get('title', f'Chapter {i+1}')
-                        content = chapter.get('content', '')
-                        images = chapter.get('images', [])
-                        
-                        # Validate images structure
-                        if not isinstance(images, list):
-                            images = []
-                        
-                        validated_chapters.append(ChapterData(
-                            title=title,
-                            content=content,
-                            images=images
-                        ))
-                    except Exception as e:
-                        logger.warning(f"Error validating chapter {i}: {e}")
-                        continue
-                
-                if validated_chapters:
-                    return validated_chapters
-                else:
-                    logger.warning("No valid chapters found in AI response")
-                    
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON parsing error: {e}")
-                logger.error(f"Raw response: {response_text}")
-        else:
-            logger.warning("No JSON array found in AI response")
-            
-        # Fallback: create logical chapters from content
-        logger.info("Using fallback chapter creation")
-        return create_fallback_chapters(content)
-            
     except Exception as e:
-        logger.error(f"Error processing document with Groq: {e}")
-        # Fallback: create a single chapter
-        return [ChapterData(title="Document Content", content=content, images=[])]
+        logger.error(f"Error formatting chapter {chapter_data.get('chapter_number', '?')} content: {e}")
+        # Fallback: basic LaTeX formatting
+        content = chapter_data['content']
+        
+        # Basic escaping
+        content = content.replace('&', '\\&')
+        content = content.replace('%', '\\%')
+        content = content.replace('$', '\\$')
+        content = content.replace('#', '\\#')
+        content = content.replace('_', '\\_')
+        
+        # Replace image placeholders with figures
+        import re
+        image_pattern = r'\[IMAGE:(\d+)_(\d+)\s+caption="([^"]+)"\]'
+        
+        def replace_image(match):
+            chapter_num = match.group(1)
+            image_num = match.group(2)
+            caption = match.group(3)
+            
+            return f"""
+
+\\begin{{figure}}[h]
+    \\centering
+    \\includegraphics[width=0.8\\textwidth]{{images/chapter{chapter_num}_image{image_num}.png}}
+    \\caption{{{caption}}}
+    \\label{{fig:chapter{chapter_num}_image{image_num}}}
+\\end{{figure}}
+
+"""
+        
+        content = re.sub(image_pattern, replace_image, content)
+        
+        return content
+
+def generate_complete_latex_document(project_details: ProjectDetails, chapters: List[dict]) -> str:
+    """
+    Generate complete LaTeX document using existing template with AI-formatted content
+    Uses your existing template structure and fills in placeholders intelligently
+    """
+    try:
+        # Load the existing template
+        template = load_latex_template()
+        
+        # Replace project title placeholder in template
+        template = template.replace("{{ project_title }}", project_details.title)
+        
+        # Extract the chapter template section
+        chapter_template_start = template.find("% ----------- Chapter Template")
+        chapter_template_end = template.find("% ---------------------------------------------------------------")
+        
+        if chapter_template_start == -1 or chapter_template_end == -1:
+            raise HTTPException(status_code=500, detail="Chapter template markers not found in template file")
+        
+        # Get the header (everything before chapter template)
+        header = template[:chapter_template_start].strip()
+        
+        # Get the footer (everything after chapter template)
+        footer_text = template[chapter_template_end + len("% ---------------------------------------------------------------"):].strip()
+        
+        # Extract the single chapter template
+        chapter_template = template[chapter_template_start:chapter_template_end + len("% ---------------------------------------------------------------")]
+        
+        # Process each chapter and generate LaTeX using the template
+        all_chapters_latex = []
+        
+        for i, chapter_data in enumerate(chapters):
+            chapter_num = chapter_data['chapter_number']
+            title = chapter_data['title']
+            
+            logger.info(f"Processing chapter {chapter_num}: {title}")
+            
+            # Get AI-formatted content for this chapter
+            formatted_content = convert_chapter_to_latex_with_ai(chapter_data)
+            
+            # Use the template and replace placeholders
+            chapter_latex = chapter_template
+            
+            # Replace all template placeholders
+            chapter_latex = chapter_latex.replace("{{ chapter_number }}", str(chapter_num))
+            chapter_latex = chapter_latex.replace("{{ chapter_title | upper }}", title.upper())
+            chapter_latex = chapter_latex.replace("{{ chapter_title }}", title)
+            chapter_latex = chapter_latex.replace("{{ chapter_content | safe }}", formatted_content)
+            
+            # Handle page numbering - only first chapter uses firstcontent style
+            if chapter_num == 1:
+                # Keep the original template behavior for first chapter
+                pass
+            else:
+                # For subsequent chapters, remove the page counter reset and use projectpages style
+                chapter_latex = chapter_latex.replace("\\setcounter{page}{1}", "% Page counter continues")
+                chapter_latex = chapter_latex.replace("\\thispagestyle{firstcontent}", "\\thispagestyle{projectpages}")
+            
+            all_chapters_latex.append(chapter_latex)
+        
+        # Combine header + all chapters + footer
+        complete_latex = header + "\n\n" + "\n".join(all_chapters_latex) + "\n\n" + footer_text
+        
+        logger.info(f"Generated complete LaTeX document with {len(chapters)} chapters using existing template")
+        
+        return complete_latex
+        
+    except Exception as e:
+        logger.error(f"Error generating LaTeX document with template: {e}")
+        raise HTTPException(status_code=500, detail=f"LaTeX generation failed: {str(e)}")
+
+def process_document_with_ai_preprocessing(content: str, project_details: ProjectDetails) -> str:
+    """
+    Main preprocessing function that implements the complete AI flow:
+    1. Parse .docx into chapters with image placeholders
+    2. Use AI to format content for existing LaTeX template
+    3. Generate final LaTeX by fitting data into existing template
+    """
+    try:
+        logger.info("Starting AI preprocessing workflow with existing template")
+        
+        # Step 1: Parse document into chapters
+        chapters = parse_docx_into_chapters(content)
+        
+        if not chapters:
+            raise HTTPException(status_code=400, detail="No chapters found in document")
+        
+        # Step 2-3: Generate LaTeX using existing template with AI-formatted content
+        final_latex = fit_chapters_into_existing_template(project_details, chapters)
+        
+        logger.info("AI preprocessing workflow completed successfully")
+        
+        return final_latex
+        
+    except Exception as e:
+        logger.error(f"Error in AI preprocessing workflow: {e}")
+        raise HTTPException(status_code=500, detail=f"AI preprocessing failed: {str(e)}")
+
+def fit_chapters_into_existing_template(project_details: ProjectDetails, chapters: List[dict]) -> str:
+    """
+    Take parsed chapters and fit them into the existing LaTeX template
+    This is the core function that uses AI to format content for your template
+    """
+    try:
+        # Load your existing template
+        template = load_latex_template()
+        
+        # Replace project title in template
+        template = template.replace("{{ project_title }}", project_details.title)
+        
+        # Create a comprehensive prompt for AI to modify the entire template
+        template_modification_prompt = f"""
+You are a LaTeX template processor. You have an existing LaTeX template with placeholders, and you need to fill it with actual chapter data.
+
+EXISTING TEMPLATE:
+{template}
+
+CHAPTER DATA TO INSERT:
+{json.dumps(chapters, indent=2)}
+
+TASK:
+1. Take the existing template and replace ALL template placeholders with actual data
+2. For each chapter in the data, create a complete chapter section using the template structure
+3. Replace placeholders like:
+   - {{ chapter_number }} → actual chapter number (1, 2, 3...)
+   - {{ chapter_title }} → actual chapter title  
+   - {{ chapter_title | upper }} → chapter title in UPPERCASE
+   - {{ chapter_content | safe }} → formatted chapter content with figures
+
+4. For [IMAGE:X_Y caption="..."] placeholders in content, replace with:
+   \\begin{{figure}}[h]
+       \\centering
+       \\includegraphics[width=0.8\\textwidth]{{images/chapterX_imageY.png}}
+       \\caption{{caption text}}
+       \\label{{fig:chapterX_imageY}}
+   \\end{{figure}}
+
+5. Handle page numbering:
+   - First chapter: use \\setcounter{{page}}{{1}} and \\thispagestyle{{firstcontent}}
+   - Subsequent chapters: remove page counter reset, use \\thispagestyle{{projectpages}}
+
+6. Ensure continuous page numbering across all chapters
+
+CRITICAL REQUIREMENTS:
+- Keep ALL the original template styling and formatting
+- Maintain the header/footer styles exactly as in template
+- Replace the chapter template section with actual chapters
+- Return COMPLETE, VALID LaTeX document ready to compile
+- Do NOT add any explanations or comments outside the LaTeX
+
+Return the complete modified LaTeX document:
+"""
+
+        if not GROQ_API_KEY:
+            logger.warning("Groq API key not configured, using fallback template processing")
+            return generate_complete_latex_document(project_details, chapters)
+        
+        from groq import Groq
+        client = Groq(api_key=GROQ_API_KEY)
+        
+        response = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": "You are an expert LaTeX template processor. Modify existing LaTeX templates by replacing placeholders with actual data. Return only valid, complete LaTeX documents."},
+                {"role": "user", "content": template_modification_prompt}
+            ],
+            model="llama-3.3-70b-versatile",
+            temperature=0.1,
+            max_tokens=4000,
+            timeout=45
+        )
+        
+        modified_latex = response.choices[0].message.content.strip()
+        
+        # Clean up any potential issues
+        if not modified_latex.startswith('\\documentclass'):
+            # AI might have returned partial content, use fallback
+            logger.warning("AI returned incomplete LaTeX, using fallback method")
+            return generate_complete_latex_document(project_details, chapters)
+        
+        logger.info(f"Successfully generated LaTeX document using AI template modification ({len(modified_latex)} chars)")
+        
+        return modified_latex
+        
+    except Exception as e:
+        logger.error(f"Error in AI template modification: {e}")
+        # Fallback to manual template processing
+        return generate_complete_latex_document(project_details, chapters)
+
+def process_document_content_with_groq(content: str) -> List[ChapterData]:
+    """
+    Process document content using new AI preprocessing workflow
+    This function maintains backward compatibility with existing API
+    """
+    try:
+        # Parse document into chapters first
+        chapters = parse_docx_into_chapters(content)
+        
+        if not chapters:
+            logger.warning("No chapters found, using fallback method")
+            return create_fallback_chapters(content)
+        
+        # Convert parsed chapters to ChapterData format for backward compatibility
+        chapter_data_list = []
+        for chapter in chapters:
+            # Extract images from the content placeholders
+            import re
+            image_pattern = r'\[IMAGE:(\d+)_(\d+)\s+caption="([^"]+)"\]'
+            images = []
+            
+            for match in re.finditer(image_pattern, chapter['content']):
+                chapter_num = int(match.group(1))
+                image_num = int(match.group(2))
+                caption = match.group(3)
+                
+                images.append({
+                    "filename": f"chapter{chapter_num}_image{image_num}.png",
+                    "caption": caption,
+                    "image_number": image_num
+                })
+            
+            # Clean content for display (remove image placeholders for backward compatibility)
+            clean_content = re.sub(image_pattern, '', chapter['content']).strip()
+            
+            chapter_data_list.append(ChapterData(
+                title=chapter['title'],
+                content=clean_content,
+                images=images
+            ))
+        
+        logger.info(f"Processed document using new AI preprocessing: {len(chapter_data_list)} chapters")
+        return chapter_data_list
+        
+    except Exception as e:
+        logger.error(f"Error in new AI preprocessing: {e}")
+        # Fallback to original method for safety
+        logger.info("Falling back to original processing method")
+        return create_fallback_chapters(content)
 
 def create_fallback_chapters(content: str) -> List[ChapterData]:
     """Create fallback chapters when AI processing fails"""
@@ -498,80 +904,100 @@ def create_fallback_chapters(content: str) -> List[ChapterData]:
     return chapters
 
 def generate_latex_files(project_details: ProjectDetails, chapters: List[ChapterData]) -> Dict[str, str]:
-    """Generate LaTeX files from template and chapter data"""
-    
-    # Load template
-    template = load_latex_template()
-    
-    # Replace project title placeholder
-    main_tex = template.replace("{{ project_title }}", project_details.title)
-    
-    # Find the chapter template section in the template
-    chapter_template_start = main_tex.find("% ----------- Chapter Template (Repeat for each chapter) -----------")
-    chapter_template_end = main_tex.find("% ---------------------------------------------------------------")
-    
-    if chapter_template_start == -1 or chapter_template_end == -1:
-        raise HTTPException(status_code=500, detail="Chapter template section not found in template")
-    
-    # Extract the chapter template
-    chapter_template = main_tex[chapter_template_start:chapter_template_end + len("% ---------------------------------------------------------------")]
-    
-    # Generate all chapters using the template
-    all_chapters_content = ""
-    
-    for i, chapter in enumerate(chapters):
-        chapter_number = i + 1
+    """
+    Generate LaTeX files using existing template with AI-enhanced content formatting
+    """
+    try:
+        # Convert ChapterData objects to dict format for processing
+        chapters_dict = []
+        for i, chapter in enumerate(chapters):
+            chapter_num = i + 1
+            
+            # Reconstruct content with image placeholders
+            content_with_images = chapter.content
+            
+            # Add image placeholders back into content
+            for img_index, image in enumerate(chapter.images):
+                if image.get('filename') and image.get('caption'):
+                    placeholder = f'[IMAGE:{chapter_num}_{img_index + 1} caption="{image["caption"]}"]'
+                    # Insert at end of content (AI will place them appropriately)
+                    content_with_images += f"\n\n{placeholder}"
+            
+            chapters_dict.append({
+                'chapter_number': chapter_num,
+                'title': chapter.title,
+                'content': content_with_images,
+                'image_count': len(chapter.images)
+            })
         
-        # Create chapter content with images integrated
-        chapter_content_with_images = chapter.content
+        # Generate complete LaTeX using template with AI formatting
+        logger.info("Generating LaTeX using existing template with AI content formatting")
+        final_latex = generate_complete_latex_document(project_details, chapters_dict)
         
-        # Add images at appropriate positions
-        for img_index, image in enumerate(chapter.images):
-            if image.get('filename') and image.get('caption'):
-                image_latex = f"""
+        return {
+            "report.tex": final_latex
+        }
+        
+    except Exception as e:
+        logger.warning(f"AI template processing failed, falling back to basic template method: {e}")
+        
+        # Fallback to basic template replacement
+        template = load_latex_template()
+        
+        # Replace project title
+        template = template.replace("{{ project_title }}", project_details.title)
+        
+        # Find template boundaries
+        chapter_template_start = template.find("% ----------- Chapter Template")
+        chapter_template_end = template.find("% ---------------------------------------------------------------")
+        
+        if chapter_template_start == -1 or chapter_template_end == -1:
+            raise HTTPException(status_code=500, detail="Chapter template markers not found")
+        
+        # Extract parts
+        header = template[:chapter_template_start]
+        footer = template[chapter_template_end + len("% ---------------------------------------------------------------"):]
+        chapter_template = template[chapter_template_start:chapter_template_end + len("% ---------------------------------------------------------------")]
+        
+        # Generate chapters using basic template replacement
+        all_chapters = []
+        
+        for i, chapter in enumerate(chapters):
+            chapter_num = i + 1
+            
+            # Basic content with images
+            content_with_images = chapter.content
+            
+            # Add basic figure LaTeX
+            for img_index, image in enumerate(chapter.images):
+                if image.get('filename') and image.get('caption'):
+                    figure_latex = f"""
 
 \\begin{{figure}}[h]
     \\centering
     \\includegraphics[width=0.8\\textwidth]{{images/{image['filename']}}}
     \\caption{{{image['caption']}}}
-    \\label{{fig:chapter{chapter_number}_image{img_index + 1}}}
+    \\label{{fig:chapter{chapter_num}_image{img_index + 1}}}
 \\end{{figure}}
 
 """
-                # Insert image at the end of content or at specified position
-                if 'position' in image and 'after_paragraph' in image['position']:
-                    # Try to insert after specific paragraph (basic implementation)
-                    paragraphs = chapter_content_with_images.split('\n\n')
-                    try:
-                        para_num = int(image['position'].split('_')[-1]) - 1
-                        if 0 <= para_num < len(paragraphs):
-                            paragraphs.insert(para_num + 1, image_latex.strip())
-                            chapter_content_with_images = '\n\n'.join(paragraphs)
-                        else:
-                            chapter_content_with_images += image_latex
-                    except (ValueError, IndexError):
-                        chapter_content_with_images += image_latex
-                else:
-                    chapter_content_with_images += image_latex
+                    content_with_images += figure_latex
+            
+            # Replace template placeholders
+            chapter_latex = chapter_template
+            chapter_latex = chapter_latex.replace("{{ chapter_number }}", str(chapter_num))
+            chapter_latex = chapter_latex.replace("{{ chapter_title | upper }}", chapter.title.upper())
+            chapter_latex = chapter_latex.replace("{{ chapter_title }}", chapter.title)
+            chapter_latex = chapter_latex.replace("{{ chapter_content | safe }}", content_with_images)
+            
+            all_chapters.append(chapter_latex)
         
-        # Replace placeholders in chapter template
-        chapter_latex = chapter_template.replace("{{ chapter_number }}", str(chapter_number))
-        chapter_latex = chapter_latex.replace("{{ chapter_title | upper }}", chapter.title.upper())
-        chapter_latex = chapter_latex.replace("{{ chapter_title }}", chapter.title)
-        chapter_latex = chapter_latex.replace("{{ chapter_content | safe }}", chapter_content_with_images)
+        # Combine all parts
+        final_latex = header + "\n".join(all_chapters) + footer
         
-        # Add to combined content
-        all_chapters_content += chapter_latex + "\n\n"
-    
-    # Replace the template section with all generated chapters
-    final_tex = main_tex[:chapter_template_start] + all_chapters_content + main_tex[chapter_template_end + len("% ---------------------------------------------------------------"):]
-    
-    # Clean up any remaining template markers
-    final_tex = final_tex.replace("\\end{document}", "").strip() + "\n\n\\end{document}\n"
-    
-    return {
-        "report.tex": final_tex
-    }
+        return {
+            "report.tex": final_latex
+        }
 
 # API Routes for document processing
 @app.post("/api/process-document")
@@ -743,6 +1169,25 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     except Exception as e:
         logger.error(f"Error creating LaTeX project ZIP: {e}")
         raise HTTPException(status_code=500, detail=f"ZIP creation failed: {str(e)}")
+
+@app.get("/api/dummy-report-pdf")
+async def serve_dummy_pdf():
+    """Serve dummy PDF report for preview"""
+    try:
+        from fastapi.responses import FileResponse
+        pdf_path = Path(__file__).parent / "templates" / "dummy_report.pdf"
+        
+        if not pdf_path.exists():
+            raise HTTPException(status_code=404, detail="Dummy PDF not found")
+        
+        return FileResponse(
+            path=str(pdf_path),
+            media_type="application/pdf",
+            headers={"Content-Disposition": "inline; filename=dummy_report.pdf"}
+        )
+    except Exception as e:
+        logger.error(f"Error serving dummy PDF: {e}")
+        raise HTTPException(status_code=500, detail=f"PDF serving failed: {str(e)}")
 
 @app.get("/api/health")
 async def health_check():

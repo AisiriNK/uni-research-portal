@@ -182,6 +182,8 @@ export function AIReportFormatter() {
     } catch (error) {
       console.error('Processing error:', error)
       updateProcessingStatus('error', 0, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      // Clear dummy files on error
+      setGeneratedFiles({})
     } finally {
       setIsProcessing(false)
     }
@@ -464,38 +466,45 @@ export function AIReportFormatter() {
               </CardDescription>
             </CardHeader>
             <CardContent className="h-full overflow-hidden">
-              {Object.keys(generatedFiles).length > 0 ? (
-                <Tabs defaultValue="report.tex" className="h-full">
-                  <TabsList className="grid w-full grid-cols-3">
-                    <TabsTrigger value="report.tex">Main File</TabsTrigger>
-                    <TabsTrigger value="chapters">Chapters</TabsTrigger>
-                    <TabsTrigger value="summary">Summary</TabsTrigger>
-                  </TabsList>
-                  
-                  <TabsContent value="report.tex" className="h-full overflow-y-auto mt-4">
-                    <div className="space-y-2 mb-4">
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-medium">report.tex</span>
-                        <Button 
-                          size="sm" 
-                          variant="outline"
-                          onClick={() => downloadFile('report.tex', mainLatexFile)}
-                        >
-                          <Download className="h-3 w-3 mr-1" />
-                          Download
-                        </Button>
-                      </div>
+              <Tabs defaultValue="report.tex" className="h-full">
+                <TabsList className="grid w-full grid-cols-3">
+                  <TabsTrigger value="report.tex">PDF Preview</TabsTrigger>
+                  <TabsTrigger value="chapters">Chapters</TabsTrigger>
+                  <TabsTrigger value="summary">Summary</TabsTrigger>
+                </TabsList>
+                
+                <TabsContent value="report.tex" className="h-full overflow-y-auto mt-4">
+                  <div className="space-y-2 mb-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium">Report Preview (PDF)</span>
+                      <Button 
+                        size="sm" 
+                        variant="outline"
+                        onClick={() => downloadFile('report.tex', mainLatexFile)}
+                        disabled={!mainLatexFile}
+                      >
+                        <Download className="h-3 w-3 mr-1" />
+                        Download Report
+                      </Button>
                     </div>
-                    <pre className="text-xs bg-muted p-4 rounded-lg overflow-auto">
-                      <code className="whitespace-pre-wrap">
-                        {mainLatexFile}
-                      </code>
-                    </pre>
-                  </TabsContent>
-                  
-                  <TabsContent value="chapters" className="h-full overflow-y-auto mt-4">
-                    <div className="space-y-4">
-                      {Object.entries(generatedFiles)
+                  </div>
+                  <div className="w-full h-[1000px] border rounded-lg overflow-hidden bg-gray-100">
+                    <iframe
+                      src="http://localhost:8000/api/dummy-report-pdf"
+                      className="w-full h-full border-0"
+                      title="Report Preview"
+                      style={{ 
+                        border: 'none',
+                        backgroundColor: 'white'
+                      }}
+                    />
+                  </div>
+                </TabsContent>
+                
+                <TabsContent value="chapters" className="h-full overflow-y-auto mt-4">
+                  <div className="space-y-4">
+                    {Object.keys(generatedFiles).length > 0 ? (
+                      Object.entries(generatedFiles)
                         .filter(([filename]) => filename.startsWith('chapter'))
                         .map(([filename, content]) => (
                           <div key={filename} className="border rounded-lg p-4">
@@ -516,30 +525,42 @@ export function AIReportFormatter() {
                               </code>
                             </pre>
                           </div>
-                        ))}
-                    </div>
-                  </TabsContent>
-                  
-                  <TabsContent value="summary" className="h-full overflow-y-auto mt-4">
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="text-center p-4 bg-blue-50 rounded-lg">
-                          <div className="text-2xl font-bold text-blue-600">
-                            {extractedChapters.length}
-                          </div>
-                          <div className="text-sm text-blue-800">Chapters</div>
-                        </div>
-                        <div className="text-center p-4 bg-green-50 rounded-lg">
-                          <div className="text-2xl font-bold text-green-600">
-                            {Object.keys(generatedFiles).length}
-                          </div>
-                          <div className="text-sm text-green-800">Files Generated</div>
+                        ))
+                    ) : (
+                      <div className="flex items-center justify-center h-full">
+                        <div className="text-center">
+                          <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                          <h3 className="text-lg font-medium mb-2">No Chapter Files</h3>
+                          <p className="text-muted-foreground">
+                            Process a document to see generated chapter files
+                          </p>
                         </div>
                       </div>
-                      
-                      <div className="space-y-2">
-                        <h4 className="font-medium">Generated Files:</h4>
-                        {Object.keys(generatedFiles).map((filename) => (
+                    )}
+                  </div>
+                </TabsContent>
+                
+                <TabsContent value="summary" className="h-full overflow-y-auto mt-4">
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="text-center p-4 bg-blue-50 rounded-lg">
+                        <div className="text-2xl font-bold text-blue-600">
+                          {extractedChapters.length}
+                        </div>
+                        <div className="text-sm text-blue-800">Chapters</div>
+                      </div>
+                      <div className="text-center p-4 bg-green-50 rounded-lg">
+                        <div className="text-2xl font-bold text-green-600">
+                          {Object.keys(generatedFiles).length}
+                        </div>
+                        <div className="text-sm text-green-800">Files Generated</div>
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <h4 className="font-medium">Generated Files:</h4>
+                      {Object.keys(generatedFiles).length > 0 ? (
+                        Object.keys(generatedFiles).map((filename) => (
                           <div key={filename} className="flex items-center justify-between p-2 bg-gray-50 rounded">
                             <span className="text-sm">{filename}</span>
                             <Button 
@@ -550,34 +571,26 @@ export function AIReportFormatter() {
                               <Download className="h-3 w-3" />
                             </Button>
                           </div>
-                        ))}
-                      </div>
-                      
-                      {processingStatus.stage === 'complete' && (
-                        <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
-                          <div className="flex items-center">
-                            <CheckCircle className="h-5 w-5 text-green-600 mr-2" />
-                            <span className="text-green-800 font-medium">Processing Complete!</span>
-                          </div>
-                          <p className="text-sm text-green-700 mt-1">
-                            Your LaTeX project is ready. Download all files and compile with your LaTeX editor.
-                          </p>
-                        </div>
+                        ))
+                      ) : (
+                        <p className="text-sm text-muted-foreground">No files generated yet</p>
                       )}
                     </div>
-                  </TabsContent>
-                </Tabs>
-              ) : (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-center">
-                    <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                    <h3 className="text-lg font-medium mb-2">No Files Generated</h3>
-                    <p className="text-muted-foreground">
-                      Upload your source document and template, then click "Process Document with AI"
-                    </p>
+                    
+                    {processingStatus.stage === 'complete' && (
+                      <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
+                        <div className="flex items-center">
+                          <CheckCircle className="h-5 w-5 text-green-600 mr-2" />
+                          <span className="text-green-800 font-medium">Processing Complete!</span>
+                        </div>
+                        <p className="text-sm text-green-700 mt-1">
+                          Your LaTeX project is ready. Download all files and compile with your LaTeX editor.
+                        </p>
+                      </div>
+                    )}
                   </div>
-                </div>
-              )}
+                </TabsContent>
+              </Tabs>
             </CardContent>
           </Card>
         </div>
