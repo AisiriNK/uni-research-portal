@@ -1,0 +1,32 @@
+mutation CreateCourse($courseCode: String!, $name: String!, $description: String) @auth(level: USER) {
+  course_insert(data: {courseCode: $courseCode, name: $name, description: $description, createdAt_expr: "request.time"})
+}
+
+query ListCourses @auth(level: PUBLIC, insecureReason: "This operation is safe to expose to the public") {
+  courses {
+    id
+    name
+    courseCode
+    description
+  }
+}
+
+mutation UpdateSubmission($id: UUID!, $feedback: String) @auth(level: USER) {
+  submission_update(key: {id: $id}, data: {feedback: $feedback})
+}
+
+query GetUserSubmissions @auth(level: USER) {
+  submissions(where: {studentId_expr: "auth.uid"}) {
+    id
+    submissionDate
+    submissionUrl
+    status
+    feedback
+    requirement {
+      id
+      name
+      description
+      dueDate
+    }
+  }
+}

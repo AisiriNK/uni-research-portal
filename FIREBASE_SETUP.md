@@ -161,7 +161,7 @@ bun run dev
 
 ### Step 2: Test User Registration
 
-1. Navigate to `http://localhost:5173/signup`
+1. Navigate to `http://localhost:8080/signup`
 2. Fill in the signup form:
    - Select role (Student or Teacher)
    - Enter name, email, department
@@ -172,7 +172,7 @@ bun run dev
 
 ### Step 3: Test Login
 
-1. Navigate to `http://localhost:5173/login`
+1. Navigate to `http://localhost:8080/login`
 2. Enter your email and password
 3. Click **Sign In**
 4. Verify you're redirected to the correct dashboard based on your role

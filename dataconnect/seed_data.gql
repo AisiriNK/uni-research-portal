@@ -1,0 +1,78 @@
+mutation CreateSeedData @transaction @auth(level: PUBLIC, insecureReason: "This operation is for populating the database with seed data, it is safe to expose to the public.") {
+  user_insertMany(data: [
+    {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      createdAt: "2024-03-15T12:00:00Z",
+      displayName: "demouser1",
+      email: "demouser1@example.com",
+      userType: "student"
+    },
+    {
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      createdAt: "2024-03-15T12:00:00Z",
+      displayName: "demouser2",
+      email: "demouser2@example.com",
+      userType: "teacher"
+    }
+  ])
+  course_insertMany(data: [
+    {
+      id: "650e8400-e29b-41d4-a716-446655440000",
+      courseCode: "CS101",
+      createdAt: "2024-03-15T12:00:00Z",
+      name: "Introduction to Computer Science"
+    },
+    {
+      id: "650e8400-e29b-41d4-a716-446655440001",
+      courseCode: "ENG201",
+      createdAt: "2024-03-15T12:00:00Z",
+      name: "Advanced English Composition"
+    }
+  ])
+  requirement_insertMany(data: [
+    {
+      id: "750e8400-e29b-41d4-a716-446655440000",
+      courseId: "650e8400-e29b-41d4-a716-446655440000",
+      clearanceRequired: true,
+      createdAt: "2024-03-15T12:00:00Z",
+      dueDate: "2024-04-01",
+      name: "Final Project Proposal"
+    },
+    {
+      id: "750e8400-e29b-41d4-a716-446655440001",
+      courseId: "650e8400-e29b-41d4-a716-446655440001",
+      clearanceRequired: false,
+      createdAt: "2024-03-15T12:00:00Z",
+      dueDate: "2024-04-15",
+      name: "Research Paper Outline"
+    }
+  ])
+  submission_insertMany(data: [
+    {
+      id: "850e8400-e29b-41d4-a716-446655440000",
+      requirementId: "750e8400-e29b-41d4-a716-446655440000",
+      studentId: "550e8400-e29b-41d4-a716-446655440000",
+      status: "pending",
+      submissionDate: "2024-03-29T12:00:00Z",
+      submissionUrl: "http://example.com/submission1"
+    },
+    {
+      id: "850e8400-e29b-41d4-a716-446655440001",
+      requirementId: "750e8400-e29b-41d4-a716-446655440001",
+      studentId: "550e8400-e29b-41d4-a716-446655440000",
+      status: "graded",
+      submissionDate: "2024-04-12T12:00:00Z",
+      submissionUrl: "http://example.com/submission2"
+    }
+  ])
+  clearance_insertMany(data: [
+    {
+      id: "950e8400-e29b-41d4-a716-446655440000",
+      requirementId: "750e8400-e29b-41d4-a716-446655440000",
+      studentId: "550e8400-e29b-41d4-a716-446655440000",
+      teacherId: "550e8400-e29b-41d4-a716-446655440001",
+      clearanceDate: "2024-03-22T12:00:00Z",
+      status: "approved"
+    }
+  ])
+}

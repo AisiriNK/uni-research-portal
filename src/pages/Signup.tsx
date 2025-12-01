@@ -101,11 +101,29 @@ const Signup: React.FC = () => {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
       <Card className="w-full max-w-lg shadow-xl">
-        <CardHeader className="space-y-1">
-          <CardTitle className="text-2xl font-bold text-center">Create Account</CardTitle>
-          <CardDescription className="text-center">
-            Sign up to get started with the portal
-          </CardDescription>
+        <CardHeader className="space-y-4">
+          {/* Logo and Brand */}
+          <div className="flex flex-col items-center space-y-2">
+            <div className="w-16 h-16 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-2xl flex items-center justify-center shadow-lg">
+              <span className="text-white font-bold text-3xl">U</span>
+            </div>
+            <div className="text-center">
+              <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
+                UniFlow
+              </h1>
+              <p className="text-sm text-muted-foreground mt-1">
+                University Research Portal
+              </p>
+            </div>
+          </div>
+          
+          {/* Welcome Message */}
+          <div className="text-center space-y-1">
+            <CardTitle className="text-2xl font-bold">Create Account</CardTitle>
+            <CardDescription>
+              Sign up to get started with the portal
+            </CardDescription>
+          </div>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">

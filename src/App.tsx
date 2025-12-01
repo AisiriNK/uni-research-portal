@@ -23,7 +23,7 @@ const App = () => (
         <AuthProvider>
           <Routes>
             {/* Public Routes */}
-            <Route path="/" element={<Index />} />
+            <Route path="/" element={<Login />} />
             <Route path="/login" element={<Login />} />
             <Route path="/signup" element={<Signup />} />
             
@@ -32,7 +32,7 @@ const App = () => (
               path="/student-dashboard"
               element={
                 <ProtectedRoute allowedRoles={['student']}>
-                  <StudentDashboard />
+                  <Index />
                 </ProtectedRoute>
               }
             />
@@ -42,7 +42,7 @@ const App = () => (
               path="/teacher-dashboard"
               element={
                 <ProtectedRoute allowedRoles={['teacher']}>
-                  <TeacherDashboard />
+                  <Index />
                 </ProtectedRoute>
               }
             />
