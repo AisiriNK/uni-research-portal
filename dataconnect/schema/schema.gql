@@ -1,0 +1,43 @@
+type User @table {
+  displayName: String!
+  userType: String!
+  email: String!
+  createdAt: Timestamp!
+  studentId: String
+  facultyId: String
+}
+
+type Course @table {
+  name: String!
+  courseCode: String!
+  createdAt: Timestamp!
+  description: String
+}
+
+type Requirement @table {
+  name: String!
+  dueDate: Date!
+  clearanceRequired: Boolean!
+  createdAt: Timestamp!
+  description: String
+  submissionInstructions: String
+  course: Course
+}
+
+type Submission @table {
+  submissionDate: Timestamp!
+  status: String!
+  submissionUrl: String!
+  feedback: String
+  student: User
+  requirement: Requirement
+}
+
+type Clearance @table {
+  status: String!
+  clearanceDate: Timestamp!
+  notes: String
+  student: User
+  requirement: Requirement
+  teacher: User
+}
