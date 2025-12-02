@@ -146,6 +146,7 @@ const Signup: React.FC = () => {
                 <SelectContent>
                   <SelectItem value="student">Student</SelectItem>
                   <SelectItem value="teacher">Teacher</SelectItem>
+                  <SelectItem value="reprography_admin">Reprography Admin</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -205,6 +206,21 @@ const Signup: React.FC = () => {
             )}
 
             {formData.role === 'teacher' && (
+              <div className="space-y-2">
+                <Label htmlFor="empId">Employee ID *</Label>
+                <Input
+                  id="empId"
+                  type="text"
+                  placeholder="Enter your employee ID"
+                  value={formData.empId}
+                  onChange={(e) => handleChange('empId', e.target.value)}
+                  disabled={loading}
+                  required
+                />
+              </div>
+            )}
+
+            {formData.role === 'reprography_admin' && (
               <div className="space-y-2">
                 <Label htmlFor="empId">Employee ID *</Label>
                 <Input

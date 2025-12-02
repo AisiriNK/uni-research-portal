@@ -20,7 +20,9 @@ const Login: React.FC = () => {
   // Redirect if already logged in
   React.useEffect(() => {
     if (user) {
-      const redirectPath = user.role === 'student' ? '/student-dashboard' : '/teacher-dashboard';
+      let redirectPath = '/student-dashboard';
+      if (user.role === 'teacher') redirectPath = '/teacher-dashboard';
+      if (user.role === 'reprography_admin') redirectPath = '/reprography-dashboard';
       navigate(redirectPath, { replace: true });
     }
   }, [user, navigate]);
