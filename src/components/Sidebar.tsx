@@ -15,7 +15,7 @@ const navigation = [
   { name: "Paper Clustering", href: "#clustering", icon: Network },
   { name: "AI Report Formatter", href: "#formatter", icon: FileText },
   { name: "Approvals & Printing", href: "#approvals", icon: CheckCircle },
-  { name: "No-Due Clearance", href: "#clearance", icon: ClipboardCheck },
+  { name: "Report Submission", href: "#clearance", icon: ClipboardCheck },
 ]
 
 interface SidebarProps {
