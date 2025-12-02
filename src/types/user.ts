@@ -1,6 +1,6 @@
 // User Type Definitions
 
-export type UserRole = 'student' | 'teacher';
+export type UserRole = 'student' | 'teacher' | 'reprography_admin';
 
 export interface BaseUser {
   uid: string;
@@ -21,7 +21,12 @@ export interface Teacher extends BaseUser {
   empId: string;
 }
 
-export type User = Student | Teacher;
+export interface ReprographyAdmin extends BaseUser {
+  role: 'reprography_admin';
+  empId: string;
+}
+
+export type User = Student | Teacher | ReprographyAdmin;
 
 export interface UserContextType {
   user: User | null;

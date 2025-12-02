@@ -40,7 +40,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const role = userData.role as UserRole;
 
       // Get detailed profile from role-specific collection
-      const roleCollectionName = role === 'student' ? 'students' : 'teachers';
+      let roleCollectionName = 'students';
+      if (role === 'teacher') roleCollectionName = 'teachers';
+      if (role === 'reprography_admin') roleCollectionName = 'reprography_admins';
+      
       const profileDocRef = doc(db, roleCollectionName, firebaseUser.uid);
       const profileDocSnap = await getDoc(profileDocRef);
 
@@ -98,8 +101,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('Registration number is required for students');
     }
 
-    if (role === 'teacher' && !empId) {
-      throw new Error('Employee ID is required for teachers');
+    if ((role === 'teacher' || role === 'reprography_admin') && !empId) {
+      throw new Error('Employee ID is required for teachers and admins');
     }
 
     try {
@@ -115,7 +118,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
 
       // Create detailed profile in role-specific collection
-      const roleCollectionName = role === 'student' ? 'students' : 'teachers';
+      let roleCollectionName = 'students';
+      if (role === 'teacher') roleCollectionName = 'teachers';
+      if (role === 'reprography_admin') roleCollectionName = 'reprography_admins';
+      
       const profileData = {
         name,
         email,

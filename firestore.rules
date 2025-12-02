@@ -62,6 +62,24 @@ service cloud.firestore {
                     && request.resource.data.email == resource.data.email;
     }
     
+    // Reprography Admins collection - detailed admin profiles
+    match /reprography_admins/{adminId} {
+      // Anyone authenticated can read admin profiles
+      allow read: if isAuthenticated();
+      
+      // Admins can only write their own profile
+      allow write: if isOwner(adminId);
+      
+      // Allow creation only if user is authenticated and creating their own document
+      allow create: if isAuthenticated() 
+                    && request.auth.uid == adminId
+                    && request.resource.data.email == request.auth.token.email;
+      
+      // Ensure admins can only update their own data, not change email
+      allow update: if isOwner(adminId) 
+                    && request.resource.data.email == resource.data.email;
+    }
+    
     // Subjects collection - public read, restricted write
     match /subjects/{subjectId} {
       // Anyone (authenticated or not) can read subjects
@@ -141,6 +159,28 @@ service cloud.firestore {
       
       // Users can delete their own research papers
       allow delete: if isAuthenticated() && resource.data.authorId == request.auth.uid;
+    }
+    
+    // Print Requests collection - for reprography admin print queue
+    match /printRequests/{requestId} {
+      // Students can read their own print requests
+      // Reprography admins can read all requests
+      allow read: if isAuthenticated() && (
+        (resource != null && resource.data.studentId == request.auth.uid) ||
+        getUserRole() == 'reprography_admin' ||
+        getUserRole() == 'student'
+      );
+      
+      // Only students can create print requests for approved submissions
+      allow create: if isAuthenticated() 
+                    && getUserRole() == 'student'
+                    && request.resource.data.studentId == request.auth.uid;
+      
+      // Only reprography admins can update print request status
+      allow update: if isAuthenticated() && getUserRole() == 'reprography_admin';
+      
+      // No one can delete print requests (maintain audit trail)
+      allow delete: if false;
     }
     
     // Default: deny all other access

@@ -8,8 +8,7 @@ import ProtectedRoute from "@/components/ProtectedRoute";
 import Index from "./pages/Index";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
-import StudentDashboard from "./pages/StudentDashboard";
-import TeacherDashboard from "./pages/TeacherDashboard";
+import ReprographyAdmin from "./pages/ReprographyAdmin";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -43,6 +42,16 @@ const App = () => (
               element={
                 <ProtectedRoute allowedRoles={['teacher']}>
                   <Index />
+                </ProtectedRoute>
+              }
+            />
+            
+            {/* Protected Routes - Reprography Admin */}
+            <Route
+              path="/reprography-dashboard"
+              element={
+                <ProtectedRoute allowedRoles={['reprography_admin']}>
+                  <ReprographyAdmin />
                 </ProtectedRoute>
               }
             />
