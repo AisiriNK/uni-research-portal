@@ -183,6 +183,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const value: UserContextType = {
     user,
+    userProfile: user, // userProfile is the same as user (contains all profile data)
     loading,
     login,
     signup,

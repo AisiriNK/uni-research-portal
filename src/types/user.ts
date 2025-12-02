@@ -25,6 +25,7 @@ export type User = Student | Teacher;
 
 export interface UserContextType {
   user: User | null;
+  userProfile: User | null; // Alias for user, contains full profile data
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   signup: (userData: SignupData) => Promise<void>;

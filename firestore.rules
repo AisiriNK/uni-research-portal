@@ -46,8 +46,11 @@ service cloud.firestore {
     
     // Teachers collection - detailed teacher profiles
     match /teachers/{teacherId} {
-      // Teachers can read and write only their own profile
-      allow read, write: if isOwner(teacherId);
+      // Anyone authenticated can read teacher profiles (needed for dropdown selection)
+      allow read: if isAuthenticated();
+      
+      // Teachers can only write their own profile
+      allow write: if isOwner(teacherId);
       
       // Allow creation only if user is authenticated and creating their own document
       allow create: if isAuthenticated() 
@@ -68,7 +71,30 @@ service cloud.firestore {
       allow create, update, delete: if isAuthenticated() && getUserRole() == 'teacher';
     }
     
-    // No-Due Clearance collection
+    // No-Due Submissions collection
+    match /noDueSubmissions/{submissionId} {
+      // Students can read their own submissions
+      // Teachers can read submissions assigned to them
+      allow read: if isAuthenticated() && (
+        resource.data.studentId == request.auth.uid ||
+        resource.data.teacherId == request.auth.uid
+      );
+      
+      // Only students can create submissions
+      allow create: if isAuthenticated() 
+                    && getUserRole() == 'student'
+                    && request.resource.data.studentId == request.auth.uid;
+      
+      // Only the assigned teacher can update the submission (approve/reject)
+      allow update: if isAuthenticated() 
+                    && getUserRole() == 'teacher'
+                    && resource.data.teacherId == request.auth.uid;
+      
+      // No one can delete submissions (maintain audit trail)
+      allow delete: if false;
+    }
+    
+    // No-Due Clearance collection (legacy - keeping for backward compatibility)
     match /noDueClearance/{clearanceId} {
       // Students can read their own clearance status
       // Teachers can read clearances for their department
