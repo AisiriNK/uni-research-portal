@@ -99,7 +99,12 @@ export function Header() {
                   </div>
                 </div>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => navigate(userProfile?.role === 'student' ? '/student-dashboard' : '/teacher-dashboard')}>
+                <DropdownMenuItem onClick={() => {
+                  if (userProfile?.role === 'student' || userProfile?.role === 'teacher') {
+                    const event = new CustomEvent('navigate-to-profile');
+                    window.dispatchEvent(event);
+                  }
+                }}>
                   <User className="mr-2 h-4 w-4" />
                   <span>Profile</span>
                 </DropdownMenuItem>

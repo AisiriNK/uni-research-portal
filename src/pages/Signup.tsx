@@ -18,6 +18,7 @@ const Signup: React.FC = () => {
     dept: '',
     role: 'student',
     regNo: '',
+    branch: '',
     empId: '',
   });
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -49,6 +50,12 @@ const Signup: React.FC = () => {
     // Email validation
     if (!/\S+@\S+\.\S+/.test(formData.email)) {
       setError('Please enter a valid email address');
+      return false;
+    }
+
+    // Student email domain validation
+    if (formData.role === 'student' && !formData.email.endsWith('@bnmit.in')) {
+      setError('Students must use @bnmit.in email address');
       return false;
     }
 
@@ -178,16 +185,30 @@ const Signup: React.FC = () => {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="dept">Department *</Label>
-              <Input
-                id="dept"
-                type="text"
-                placeholder="e.g., Computer Science"
+              <Label htmlFor="dept">Department/Branch *</Label>
+              <Select
                 value={formData.dept}
-                onChange={(e) => handleChange('dept', e.target.value)}
+                onValueChange={(value) => {
+                  handleChange('dept', value);
+                  if (formData.role === 'student') {
+                    handleChange('branch', value);
+                  }
+                }}
                 disabled={loading}
-                required
-              />
+              >
+                <SelectTrigger id="dept">
+                  <SelectValue placeholder="Select department" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Computer Science">Computer Science</SelectItem>
+                  <SelectItem value="Electronics">Electronics & Communication</SelectItem>
+                  <SelectItem value="Electrical">Electrical & Electronics</SelectItem>
+                  <SelectItem value="Mechanical">Mechanical Engineering</SelectItem>
+                  <SelectItem value="Civil">Civil Engineering</SelectItem>
+                  <SelectItem value="Information Science">Information Science</SelectItem>
+                  <SelectItem value="AI & ML">Artificial Intelligence & Machine Learning</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             {formData.role === 'student' && (

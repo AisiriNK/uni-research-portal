@@ -14,7 +14,7 @@ const navigation = [
   { name: "Research Hub", href: "#research", icon: BookOpen },
   { name: "Paper Clustering", href: "#clustering", icon: Network },
   { name: "AI Report Formatter", href: "#formatter", icon: FileText },
-  { name: "Approvals & Printing", href: "#approvals", icon: CheckCircle },
+  { name: "No-Due Clearance", href: "#approvals", icon: CheckCircle },
   { name: "Report Submission", href: "#clearance", icon: ClipboardCheck },
 ]
 
