@@ -262,6 +262,8 @@ export function StudentSubmissionStatus() {
                       ? 'bg-green-50 border-green-200'
                       : printRequests.get(submission.id)!.status === 'in-progress'
                       ? 'bg-blue-50 border-blue-200'
+                      : printRequests.get(submission.id)!.status === 'cancelled'
+                      ? 'bg-gray-50 border-gray-200'
                       : 'bg-yellow-50 border-yellow-200'
                   }`}>
                     <div className="flex items-start space-x-2">
@@ -270,6 +272,8 @@ export function StudentSubmissionStatus() {
                           ? 'text-green-600'
                           : printRequests.get(submission.id)!.status === 'in-progress'
                           ? 'text-blue-600'
+                          : printRequests.get(submission.id)!.status === 'cancelled'
+                          ? 'text-gray-600'
                           : 'text-yellow-600'
                       }`} />
                       <div className="flex-1">
@@ -278,6 +282,8 @@ export function StudentSubmissionStatus() {
                             ? 'text-green-800'
                             : printRequests.get(submission.id)!.status === 'in-progress'
                             ? 'text-blue-800'
+                            : printRequests.get(submission.id)!.status === 'cancelled'
+                            ? 'text-gray-800'
                             : 'text-yellow-800'
                         }`}>
                           Print Status: {
@@ -285,6 +291,8 @@ export function StudentSubmissionStatus() {
                               ? '✓ Completed - Ready for Collection'
                               : printRequests.get(submission.id)!.status === 'in-progress'
                               ? 'Currently Printing...'
+                              : printRequests.get(submission.id)!.status === 'cancelled'
+                              ? '✗ Cancelled'
                               : 'Pending in Print Queue'
                           }
                         </h4>

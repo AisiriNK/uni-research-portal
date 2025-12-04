@@ -61,7 +61,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         dept: profileData.dept,
         role: role,
         createdAt: profileData.createdAt?.toDate() || new Date(),
-        ...(role === 'student' ? { regNo: profileData.regNo } : { empId: profileData.empId }),
+        ...(role === 'student' ? { 
+          regNo: profileData.regNo,
+          branch: profileData.branch,
+          year: profileData.year,
+          department: profileData.dept // Add department alias
+        } : { empId: profileData.empId }),
       } as User;
     } catch (error) {
       console.error('Error fetching user data:', error);
@@ -127,7 +132,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         email,
         dept,
         createdAt: serverTimestamp(),
-        ...(role === 'student' ? { regNo } : { empId }),
+        ...(role === 'student' ? { regNo, branch: userData.branch || dept } : { empId }),
       };
 
       await setDoc(doc(db, roleCollectionName, firebaseUser.uid), profileData);

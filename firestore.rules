@@ -183,6 +183,32 @@ service cloud.firestore {
       allow delete: if false;
     }
     
+    // No-Due Approvals collection - for parallel approval workflow
+    match /noDueApprovals/{approvalId} {
+      // Students can read their own approval requests
+      // Teachers can read approval requests assigned to them
+      allow read: if isAuthenticated() && (
+        resource.data.studentId == request.auth.uid ||
+        resource.data.teacherId == request.auth.uid
+      );
+      
+      // Only students can create approval requests
+      allow create: if isAuthenticated() 
+                    && getUserRole() == 'student'
+                    && request.resource.data.studentId == request.auth.uid;
+      
+      // Update rules:
+      // - Teachers can update approval status (approve/reject)
+      // - Students can resubmit their own rejected requests
+      allow update: if isAuthenticated() && (
+        (getUserRole() == 'teacher' && resource.data.teacherId == request.auth.uid) ||
+        (getUserRole() == 'student' && resource.data.studentId == request.auth.uid && resource.data.status == 'rejected')
+      );
+      
+      // No one can delete approval requests (maintain audit trail)
+      allow delete: if false;
+    }
+    
     // Default: deny all other access
     match /{document=**} {
       allow read, write: if false;

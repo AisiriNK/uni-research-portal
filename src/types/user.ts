@@ -14,6 +14,9 @@ export interface BaseUser {
 export interface Student extends BaseUser {
   role: 'student';
   regNo: string;
+  branch?: string;
+  year?: string;
+  department?: string; // Alias for dept for compatibility
 }
 
 export interface Teacher extends BaseUser {
@@ -44,5 +47,6 @@ export interface SignupData {
   dept: string;
   role: UserRole;
   regNo?: string;
+  branch?: string;
   empId?: string;
 }
