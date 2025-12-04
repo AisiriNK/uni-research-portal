@@ -174,8 +174,7 @@ export function generateNoDueCertificateHTML(data: NoDueCertificateData): string
     <div class="student-info">
       <p><strong>Student Name:</strong> ${studentName}</p>
       <p><strong>Registration Number:</strong> ${studentRegNo}</p>
-      <p><strong>Department:</strong> ${studentDept}</p>
-      <p><strong>Branch:</strong> ${studentBranch}</p>
+      <p><strong>Department:</strong> ${departmentName}</p>
       <p><strong>Year of Study:</strong> ${yearOfStudy}</p>
       <p><strong>Academic Year:</strong> ${academicYear}</p>
       <p><strong>Semester:</strong> ${semester}</p>
