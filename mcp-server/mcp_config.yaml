@@ -1,0 +1,135 @@
+# MCP Server Configuration
+
+# Tool Definitions
+tools:
+  - name: fetch_openalex
+    description: "Fetch academic papers from OpenAlex API"
+    timeout_seconds: 60
+    max_retries: 3
+    circuit_breaker_threshold: 5
+    tags: [data-fetching, openalex]
+    
+  - name: embed_papers
+    description: "Generate embeddings for paper abstracts"
+    timeout_seconds: 120
+    max_retries: 2
+    circuit_breaker_threshold: 5
+    tags: [embedding, ml]
+    
+  - name: classify_with_groq
+    description: "Classify papers using Groq LLM"
+    timeout_seconds: 90
+    max_retries: 3
+    circuit_breaker_threshold: 5
+    tags: [classification, groq, llm]
+    
+  - name: summarize_with_gemini
+    description: "Summarize clusters using Gemini"
+    timeout_seconds: 120
+    max_retries: 3
+    circuit_breaker_threshold: 5
+    tags: [summarization, gemini, llm]
+    
+  - name: gap_analysis_with_ollama
+    description: "Perform research gap analysis using Ollama"
+    timeout_seconds: 150
+    max_retries: 2
+    circuit_breaker_threshold: 5
+    tags: [gap-analysis, ollama, llm]
+    
+  - name: compute_citation_intel
+    description: "Compute citation intelligence metrics"
+    timeout_seconds: 60
+    max_retries: 3
+    circuit_breaker_threshold: 5
+    tags: [citation-analysis, metrics]
+    
+  - name: cluster_papers
+    description: "Cluster papers based on embeddings"
+    timeout_seconds: 90
+    max_retries: 2
+    circuit_breaker_threshold: 5
+    tags: [clustering, ml]
+
+# Sample Workflow Definitions
+workflows:
+  - name: sequential_research_pipeline
+    description: "Sequential workflow for comprehensive research analysis"
+    mode: sequential
+    max_concurrent: 1
+    timeout_seconds: 600
+    on_error: stop
+    steps:
+      - tool: fetch_openalex
+        input:
+          query: "{{user_query}}"
+          limit: 50
+      
+      - tool: embed_papers
+        input:
+          paper_ids: "{{context.papers[*].paper_id}}"
+          model: "text-embedding-ada-002"
+      
+      - tool: cluster_papers
+        input:
+          embedding_ids: "{{context.embeddings[*].paper_id}}"
+          num_clusters: 5
+          algorithm: "kmeans"
+      
+      - tool: classify_with_groq
+        input:
+          paper_ids: "{{context.papers[*].paper_id}}"
+          categories: ["AI", "ML", "NLP", "CV", "Robotics"]
+      
+      - tool: compute_citation_intel
+        input:
+          paper_ids: "{{context.papers[*].paper_id}}"
+          citation_data: "{{context.papers}}"
+
+  - name: parallel_cluster_summarization
+    description: "Parallel workflow for cluster summarization and gap analysis"
+    mode: parallel
+    max_concurrent: 5
+    timeout_seconds: 300
+    on_error: continue
+    steps:
+      # These steps run in parallel for each cluster
+      - tool: summarize_with_gemini
+        input:
+          cluster_id: "{{cluster_1.cluster_id}}"
+          paper_ids: "{{cluster_1.paper_ids}}"
+          abstracts: "{{get_abstracts(cluster_1.paper_ids)}}"
+      
+      - tool: gap_analysis_with_ollama
+        input:
+          cluster_id: "{{cluster_1.cluster_id}}"
+          papers: "{{get_papers(cluster_1.paper_ids)}}"
+          domain: "Computer Science"
+
+# Context Configuration
+context:
+  default_ttl_seconds: 3600
+  max_size_mb: 10
+  enable_persistence: false
+  pagination:
+    default_per_page: 50
+    max_per_page: 200
+
+# Execution Configuration
+execution:
+  default_tool_timeout: 60
+  max_tool_retries: 3
+  circuit_breaker_threshold: 5
+  max_workflow_timeout: 300
+  max_concurrent_steps: 5
+
+# Logging Configuration
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+# Metrics Configuration
+metrics:
+  enabled: true
+  port: 9090
+  path: /metrics

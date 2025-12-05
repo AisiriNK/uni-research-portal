@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  # Redis for ephemeral context storage
+  redis:
+    image: redis:7-alpine
+    container_name: mcp-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - mcp-network
+
+  # MCP Server
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-server
+    ports:
+      - "8001:8001"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - API_KEY=${API_KEY:-development-key}
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-admin-key}
+      - DEFAULT_CONTEXT_TTL=3600
+      - LOG_LEVEL=INFO
+      - ENABLE_FIRESTORE_PERSISTENCE=false
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - mcp-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8001/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Optional: Firestore Emulator for local development
+  firestore-emulator:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+    container_name: mcp-firestore-emulator
+    ports:
+      - "8080:8080"
+    command: gcloud emulators firestore start --host-port=0.0.0.0:8080
+    environment:
+      - FIRESTORE_PROJECT_ID=mcp-local
+    networks:
+      - mcp-network
+    profiles:
+      - dev  # Only start with --profile dev
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  mcp-network:
+    driver: bridge
