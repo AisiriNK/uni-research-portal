@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { ThemeProvider } from "@/components/ThemeProvider"
 import { Header } from "@/components/Header"
 import { Sidebar } from "@/components/Sidebar"
@@ -7,9 +7,21 @@ import { AIReportFormatter } from "@/components/AIReportFormatter"
 import { ApprovalsPrinting } from "@/components/ApprovalsPrinting"
 import { NoDueClearance } from "@/components/NoDueClearance"
 import { PaperSearchCluster } from "@/components/PaperSearchCluster"
+import { ProfileSettings } from "@/components/ProfileSettings"
 
 const Index = () => {
   const [activeSection, setActiveSection] = useState("research")
+
+  useEffect(() => {
+    const handleNavigateToProfile = () => {
+      setActiveSection('profile');
+    };
+
+    window.addEventListener('navigate-to-profile', handleNavigateToProfile);
+    return () => {
+      window.removeEventListener('navigate-to-profile', handleNavigateToProfile);
+    };
+  }, []);
 
   const renderContent = () => {
     switch (activeSection) {
@@ -23,6 +35,8 @@ const Index = () => {
         return <ApprovalsPrinting />
       case "clearance":
         return <NoDueClearance />
+      case "profile":
+        return <ProfileSettings />
       default:
         return <ResearchHub />
     }
