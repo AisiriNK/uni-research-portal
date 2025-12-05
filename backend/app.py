@@ -747,12 +747,123 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 @app.get("/api/health")
 async def health_check():
     """Health check with system information"""
+    # Check MCP server health
+    mcp_healthy = False
+    try:
+        from mcp_integration import check_mcp_health
+        mcp_healthy = await check_mcp_health()
+    except Exception as e:
+        logger.warning(f"MCP health check failed: {e}")
+    
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "groq_configured": bool(GROQ_API_KEY),
+        "mcp_server": "healthy" if mcp_healthy else "unavailable",
         "version": "1.0.0"
     }
+
+# ============================================================================
+# MCP Integration Endpoints
+# ============================================================================
+
+@app.post("/api/mcp/orchestrate-clustering")
+async def mcp_orchestrate_clustering(
+    query: str = Query(..., description="Research query"),
+    limit: int = Query(default=50, ge=1, le=200),
+    num_clusters: int = Query(default=5, ge=2, le=10),
+    owner_id: str = Query(default="api_user")
+):
+    """
+    Orchestrate paper clustering using MCP server
+    Returns MCP context ID and workflow results
+    """
+    try:
+        from mcp_integration import orchestrate_paper_clustering
+        
+        result = await orchestrate_paper_clustering(
+            query=query,
+            limit=limit,
+            num_clusters=num_clusters,
+            owner_id=owner_id
+        )
+        
+        return {
+            "success": True,
+            "context_id": result["context_id"],
+            "workflow_status": result["workflow_result"]["status"],
+            "papers_count": len(result["papers"]),
+            "clusters_count": len(result["clusters"]),
+            "execution_time_ms": result["execution_time_ms"],
+            "papers": result["papers"][:20],  # Return first 20 papers
+            "clusters": result["clusters"]
+        }
+        
+    except Exception as e:
+        logger.error(f"MCP clustering orchestration failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"MCP orchestration failed: {str(e)}"
+        )
+
+@app.post("/api/mcp/orchestrate-gaps")
+async def mcp_orchestrate_gap_analysis(
+    base_paper: Dict[str, Any],
+    related_papers: List[Dict[str, Any]],
+    domain: str = Query(default="Computer Science"),
+    owner_id: str = Query(default="api_user")
+):
+    """
+    Orchestrate research gap analysis using MCP server
+    """
+    try:
+        from mcp_integration import orchestrate_research_gaps
+        
+        result = await orchestrate_research_gaps(
+            base_paper=base_paper,
+            related_papers=related_papers,
+            domain=domain,
+            owner_id=owner_id
+        )
+        
+        return {
+            "success": True,
+            "context_id": result["context_id"],
+            "workflow_status": result["workflow_result"]["status"],
+            "research_gaps": result["research_gaps"],
+            "agent_logs": result["agent_logs"][-10:]  # Last 10 logs
+        }
+        
+    except Exception as e:
+        logger.error(f"MCP gap analysis failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Gap analysis orchestration failed: {str(e)}"
+        )
+
+@app.get("/api/mcp/context/{context_id}")
+async def mcp_get_context(context_id: str):
+    """
+    Get cached MCP context results
+    """
+    try:
+        from mcp_integration import get_cached_context
+        
+        context = await get_cached_context(context_id)
+        
+        if not context:
+            raise HTTPException(status_code=404, detail="Context not found or expired")
+        
+        return {
+            "success": True,
+            "context": context
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get MCP context: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
