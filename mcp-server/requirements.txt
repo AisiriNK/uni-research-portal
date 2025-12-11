@@ -10,6 +10,16 @@ python-dotenv>=1.0.0
 pydantic-settings>=2.1.0
 aioredis>=2.0.1
 
-# Real AI service integrations
+# AI service integrations
 groq>=0.4.0
 google-generativeai>=0.3.0
+
+# Vector database and ML
+chromadb==0.4.22
+sentence-transformers==2.2.2
+scikit-learn==1.4.0
+numpy==1.26.3
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.23.3
