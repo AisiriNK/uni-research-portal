@@ -7,8 +7,12 @@ import httpx
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
 import logging
+from pathlib import Path
 
-load_dotenv()
+# Load environment variables from root .env file
+root_dir = Path(__file__).parent.parent
+env_path = root_dir / '.env'
+load_dotenv(dotenv_path=env_path)
 logger = logging.getLogger(__name__)
 
 # MCP Server configuration

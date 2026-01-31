@@ -7,7 +7,8 @@ import logging
 from typing import Optional, List, Dict
 import asyncio
 from datetime import datetime
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from .registry import tool_registry
 from config import settings
@@ -46,12 +47,15 @@ class GeminiRateLimiter:
 # Rate limiter instance
 gemini_limiter = GeminiRateLimiter(calls_per_minute=settings.GEMINI_RATE_LIMIT)
 
-# Initialize Gemini
+# Initialize Gemini client
+gemini_client = None
 if settings.GEMINI_API_KEY:
-    genai.configure(api_key=settings.GEMINI_API_KEY)
-    gemini_model = genai.GenerativeModel('gemini-pro')
+    try:
+        gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        logger.info("✅ Gemini client initialized")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize Gemini: {e}")
 else:
-    gemini_model = None
     logger.warning("⚠️ GEMINI_API_KEY not set")
 
 
@@ -71,7 +75,7 @@ async def summarize_with_gemini(paper: Dict) -> str:
     Returns:
         Summary text
     """
-    if not gemini_model:
+    if not gemini_client:
         raise ValueError("Gemini API not configured")
     
     try:
@@ -99,10 +103,11 @@ Provide a 3-4 sentence summary covering:
 
 Summary:"""
         
-        # Generate
+        # Generate using new API
         response = await asyncio.to_thread(
-            gemini_model.generate_content,
-            prompt
+            gemini_client.models.generate_content,
+            model='gemini-2.0-flash-exp',
+            contents=prompt
         )
         
         summary = response.text.strip()

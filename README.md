@@ -43,17 +43,29 @@ cd <YOUR_PROJECT_NAME>
 # Install dependencies
 npm install
 
-# Set up environment variables
+# Set up environment variables (SINGLE .env file for entire project)
 cp .env.example .env
-# Add your Gemini API key to .env
+# Edit .env and add your API keys (Firebase, Gemini, Groq, etc.)
 
 # Start development server
 npm run dev
 ```
 
+### Environment Configuration
+
+**⚠️ Important**: This project uses a **single `.env` file** at the root level.
+
+- ✅ One `.env` file for frontend, backend, and MCP server
+- ✅ All configuration in one place
+- ❌ Do NOT create separate `.env` files in subdirectories
+
+See [ENVIRONMENT_SETUP.md](ENVIRONMENT_SETUP.md) for complete configuration guide.
+
 ### AI Setup
-1. **Gemini AI**: Get API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
-2. **Ollama**: Follow setup in [RESEARCH_GAP_SETUP.md](RESEARCH_GAP_SETUP.md)
+1. **Firebase**: Get credentials from [Firebase Console](https://console.firebase.google.com/)
+2. **Gemini AI**: Get API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
+3. **Groq AI**: Get API key from [Groq Console](https://console.groq.com/keys)
+4. **Ollama** (optional): Follow setup in [RESEARCH_GAP_SETUP.md](RESEARCH_GAP_SETUP.md)
 
 ## Project info
 

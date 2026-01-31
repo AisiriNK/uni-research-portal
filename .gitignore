@@ -12,16 +12,34 @@ dist
 dist-ssr
 *.local
 
-# Environment variables
+# Environment variables (ONLY root .env is used)
 .env
 .env.local
 .env.*.local
+# Ignore any accidentally created subdirectory .env files
+backend/.env
+backend/.env.*
+mcp-server/.env
+mcp-server/.env.*
 
 # Backend Python
 backend/venv/
+backend/env/
 backend/__pycache__/
 backend/*.pyc
+backend/*.pyo
+backend/*.pyd
 backend/.pytest_cache/
+backend/.coverage
+backend/htmlcov/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.installed.cfg
+*.egg
 
 # Firebase
 .firebase/
@@ -50,7 +68,29 @@ Thumbs.db
 
 # Temporary and test files
 test_document.txt
+test-openalex.html
 verify-firebase-setup.js
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# MCP Server (if added in future)
+mcp-server/__pycache__/
+mcp-server/venv/
+mcp-server/env/
+
+# IDEs and Editors
+.vscode/settings.json
+.vscode/launch.json
+.vscode/tasks.json
+*.sublime-project
+*.sublime-workspace
+
+# Build and distribution
+build/
+*.tsbuildinfo
 
 # Lock files (optional - some teams prefer to commit these)
 # package-lock.json

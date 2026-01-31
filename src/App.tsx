@@ -8,6 +8,7 @@ import ProtectedRoute from "@/components/ProtectedRoute";
 import Index from "./pages/Index";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
+import AdminDashboard from "./pages/AdminDashboard";
 import ReprographyAdmin from "./pages/ReprographyAdmin";
 import NotFound from "./pages/NotFound";
 
@@ -42,6 +43,16 @@ const App = () => (
               element={
                 <ProtectedRoute allowedRoles={['teacher']}>
                   <Index />
+                </ProtectedRoute>
+              }
+            />
+            
+            {/* Protected Routes - Department Admin */}
+            <Route
+              path="/admin-dashboard"
+              element={
+                <ProtectedRoute allowedRoles={['department_admin', 'admin']}>
+                  <AdminDashboard />
                 </ProtectedRoute>
               }
             />

@@ -170,6 +170,8 @@ bun run dev
 3. Click **Sign Up**
 4. You should be redirected to the appropriate dashboard
 
+**Note**: Your app is configured to run on port **8080** (see `vite.config.ts`).
+
 ### Step 3: Test Login
 
 1. Navigate to `http://localhost:8080/login`

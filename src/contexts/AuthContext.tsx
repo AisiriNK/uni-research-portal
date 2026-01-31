@@ -8,7 +8,15 @@ import {
 } from 'firebase/auth';
 import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '@/config/firebase';
-import { User, UserContextType, SignupData, UserRole } from '@/types/user';
+import { 
+  User, 
+  UserContextType, 
+  SignupData, 
+  UserRole,
+  Student,
+  Teacher,
+  DepartmentAdmin
+} from '@/types/user';
 
 const AuthContext = createContext<UserContextType | undefined>(undefined);
 
@@ -24,10 +32,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Fetch user data from Firestore
+  /**
+   * Fetch user data from Firestore using new schema
+   * 
+   * CHANGES:
+   * - Students collection uses usn as document ID
+   * - Teachers collection uses employeeId as document ID
+   * - Admins collection uses adminId as document ID
+   * - No more UID-based document IDs (except for users collection)
+   */
   const fetchUserData = async (firebaseUser: FirebaseUser): Promise<User | null> => {
     try {
-      // Get role from users collection
+      // Get role from users collection (uid-based)
       const userDocRef = doc(db, 'users', firebaseUser.uid);
       const userDocSnap = await getDoc(userDocRef);
 
@@ -40,34 +56,92 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const role = userData.role as UserRole;
 
       // Get detailed profile from role-specific collection
-      let roleCollectionName = 'students';
-      if (role === 'teacher') roleCollectionName = 'teachers';
-      if (role === 'reprography_admin') roleCollectionName = 'reprography_admins';
+      // Note: We store the profile ID (usn/employeeId/adminId) in users collection
+      const profileId = userData.profileId as string;
       
-      const profileDocRef = doc(db, roleCollectionName, firebaseUser.uid);
-      const profileDocSnap = await getDoc(profileDocRef);
-
-      if (!profileDocSnap.exists()) {
-        console.error('Profile document not found');
+      if (!profileId) {
+        console.error('Profile ID not found in user document');
         return null;
       }
 
-      const profileData = profileDocSnap.data();
-
-      return {
-        uid: firebaseUser.uid,
-        email: firebaseUser.email!,
-        name: profileData.name,
-        dept: profileData.dept,
-        role: role,
-        createdAt: profileData.createdAt?.toDate() || new Date(),
-        ...(role === 'student' ? { 
-          regNo: profileData.regNo,
-          branch: profileData.branch,
-          year: profileData.year,
-          department: profileData.dept // Add department alias
-        } : { empId: profileData.empId }),
-      } as User;
+      let profileData: any;
+      
+      if (role === 'student') {
+        const profileDocRef = doc(db, 'students', profileId);
+        const profileDocSnap = await getDoc(profileDocRef);
+        
+        if (!profileDocSnap.exists()) {
+          console.error('Student profile not found');
+          return null;
+        }
+        
+        profileData = profileDocSnap.data();
+        
+        return {
+          uid: firebaseUser.uid,
+          email: firebaseUser.email!,
+          name: profileData.name,
+          role: 'student',
+          usn: profileData.usn,
+          dateOfBirth: profileData.dateOfBirth,
+          departmentId: profileData.departmentId,
+          batchYear: profileData.batchYear,
+          section: profileData.section,
+          mentorEmployeeId: profileData.mentorEmployeeId,
+          createdAt: profileData.createdAt?.toDate() || new Date(),
+          // Legacy aliases
+          dept: profileData.departmentId,
+          regNo: profileData.usn,
+        } as Student;
+      } else if (role === 'teacher') {
+        const profileDocRef = doc(db, 'teachers', profileId);
+        const profileDocSnap = await getDoc(profileDocRef);
+        
+        if (!profileDocSnap.exists()) {
+          console.error('Teacher profile not found');
+          return null;
+        }
+        
+        profileData = profileDocSnap.data();
+        
+        return {
+          uid: firebaseUser.uid,
+          email: firebaseUser.email!,
+          name: profileData.name,
+          role: 'teacher',
+          employeeId: profileData.employeeId,
+          departmentId: profileData.departmentId,
+          teacherRole: profileData.role, // Teacher's specific role (faculty/mentor/etc)
+          createdAt: profileData.createdAt?.toDate() || new Date(),
+          // Legacy aliases
+          empId: profileData.employeeId,
+          dept: profileData.departmentId,
+        } as Teacher;
+      } else if (role === 'department_admin' || role === 'admin') {
+        const profileDocRef = doc(db, 'admins', profileId);
+        const profileDocSnap = await getDoc(profileDocRef);
+        
+        if (!profileDocSnap.exists()) {
+          console.error('Admin profile not found');
+          return null;
+        }
+        
+        profileData = profileDocSnap.data();
+        
+        return {
+          uid: firebaseUser.uid,
+          email: firebaseUser.email!,
+          name: profileData.name || 'Admin',
+          role: 'department_admin',
+          adminId: profileData.adminId,
+          departmentId: profileData.departmentId,
+          createdAt: profileData.createdAt?.toDate() || new Date(),
+          // Legacy alias
+          dept: profileData.departmentId,
+        } as DepartmentAdmin;
+      }
+      
+      return null;
     } catch (error) {
       console.error('Error fetching user data:', error);
       return null;
@@ -89,72 +163,91 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return unsubscribe;
   }, []);
 
-  // Signup function
+  /**
+   * Signup function - DISABLED
+   * 
+   * Account creation is disabled for all users.
+   * Only administrators can create accounts using administrative tools.
+   * 
+   * Students: Use studentAccountService.ts (admin only)
+   * Teachers: Admin creates via Firebase Console or admin panel
+   * Admins: Super admin creates via Firebase Console
+   */
   const signup = async (userData: SignupData): Promise<void> => {
-    const { email, password, name, dept, role, regNo, empId } = userData;
+    // Block all account creation attempts
+    throw new Error('Account creation is disabled. Please contact your system administrator to create an account.');
+  };
 
-    // Validation
-    if (!email || !password || !name || !dept || !role) {
-      throw new Error('All required fields must be filled');
-    }
-
-    if (password.length < 6) {
-      throw new Error('Password must be at least 6 characters long');
-    }
-
-    if (role === 'student' && !regNo) {
-      throw new Error('Registration number is required for students');
-    }
-
-    if ((role === 'teacher' || role === 'reprography_admin') && !empId) {
-      throw new Error('Employee ID is required for teachers and admins');
+  /**
+   * Student login using USN and Date of Birth
+   * Students use USN+DOB instead of email/password
+   */
+  const loginStudent = async (usn: string, dob: string): Promise<void> => {
+    if (!usn || !dob) {
+      throw new Error('USN and Date of Birth are required');
     }
 
     try {
-      // Create user in Firebase Auth
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      const firebaseUser = userCredential.user;
-
-      // Create user role reference document
-      await setDoc(doc(db, 'users', firebaseUser.uid), {
-        email,
-        role,
-        createdAt: serverTimestamp(),
-      });
-
-      // Create detailed profile in role-specific collection
-      let roleCollectionName = 'students';
-      if (role === 'teacher') roleCollectionName = 'teachers';
-      if (role === 'reprography_admin') roleCollectionName = 'reprography_admins';
+      // Check if student exists and verify DOB
+      const studentRef = doc(db, 'students', usn);
+      const studentSnap = await getDoc(studentRef);
       
-      const profileData = {
-        name,
-        email,
-        dept,
-        createdAt: serverTimestamp(),
-        ...(role === 'student' ? { regNo, branch: userData.branch || dept } : { empId }),
-      };
-
-      await setDoc(doc(db, roleCollectionName, firebaseUser.uid), profileData);
-
-      // Fetch and set user data
-      const newUser = await fetchUserData(firebaseUser);
-      setUser(newUser);
+      if (!studentSnap.exists()) {
+        throw new Error('Student not found. Please check your USN.');
+      }
+      
+      const studentData = studentSnap.data();
+      
+      // Verify Date of Birth
+      if (studentData.dateOfBirth !== dob) {
+        throw new Error('Invalid Date of Birth. Please check and try again.');
+      }
+      
+      // Generate email for Firebase Auth (usn@university.edu)
+      const email = `${usn.toLowerCase()}@university.edu`;
+      
+      // Use DOB as password for Firebase Auth
+      // If Firebase Auth account doesn't exist, create it
+      try {
+        const userCredential = await signInWithEmailAndPassword(auth, email, dob);
+        const userData = await fetchUserData(userCredential.user);
+        
+        if (!userData) {
+          throw new Error('User profile not found. Please contact support.');
+        }
+        
+        setUser(userData);
+      } catch (authError: any) {
+        if (authError.code === 'auth/user-not-found') {
+          // Create Firebase Auth account for student
+          const userCredential = await createUserWithEmailAndPassword(auth, email, dob);
+          
+          // Create users reference document
+          await setDoc(doc(db, 'users', userCredential.user.uid), {
+            email,
+            role: 'student',
+            profileId: usn,
+            createdAt: serverTimestamp(),
+          });
+          
+          const userData = await fetchUserData(userCredential.user);
+          setUser(userData);
+        } else {
+          throw authError;
+        }
+      }
     } catch (error: any) {
-      // Handle Firebase errors
-      if (error.code === 'auth/email-already-in-use') {
-        throw new Error('This email is already registered');
-      } else if (error.code === 'auth/invalid-email') {
-        throw new Error('Invalid email format');
-      } else if (error.code === 'auth/weak-password') {
-        throw new Error('Password is too weak');
+      if (error.code === 'auth/invalid-credential' || error.code === 'auth/wrong-password') {
+        throw new Error('Invalid Date of Birth. Please check and try again.');
+      } else if (error.code === 'auth/too-many-requests') {
+        throw new Error('Too many failed login attempts. Please try again later');
       } else {
-        throw new Error(error.message || 'Signup failed. Please try again');
+        throw new Error(error.message || 'Login failed. Please try again');
       }
     }
   };
 
-  // Login function
+  // Login function (for teachers and admins)
   const login = async (email: string, password: string): Promise<void> => {
     if (!email || !password) {
       throw new Error('Email and password are required');
@@ -197,6 +290,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     userProfile: user, // userProfile is the same as user (contains all profile data)
     loading,
     login,
+    loginStudent, // Student login with USN+DOB
     signup,
     logout,
   };

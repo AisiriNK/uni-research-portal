@@ -23,3 +23,8 @@ numpy==1.26.3
 # Testing
 pytest==7.4.3
 pytest-asyncio==0.23.3
+# Core dependencies
+
+# AI/ML - Compatible versions
+huggingface-hub==0.16.4
+

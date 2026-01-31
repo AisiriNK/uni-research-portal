@@ -6,8 +6,12 @@ import asyncio
 import httpx
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 
-load_dotenv()
+# Load environment variables from root .env file
+root_dir = Path(__file__).parent.parent
+env_path = root_dir / '.env'
+load_dotenv(dotenv_path=env_path)
 
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8001")
 API_KEY = os.getenv("API_KEY", "development-key")

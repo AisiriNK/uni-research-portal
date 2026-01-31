@@ -168,12 +168,36 @@ export function StudentSubmissionForm() {
       const fileInput = document.getElementById('pdf-upload') as HTMLInputElement;
       if (fileInput) fileInput.value = '';
 
-    } catch (err) {
+    } catch (err: any) {
       console.error('Submission error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to submit. Please try again.');
+      console.error('Error code:', err?.code);
+      console.error('Error message:', err?.message);
+      
+      let errorMessage = 'Failed to submit. Please try again.';
+      let errorDescription = 'There was an error submitting your document.';
+      
+      // Handle specific Firebase Storage errors
+      if (err?.code === 'storage/unauthorized' || err?.code === 'storage/unauthenticated') {
+        errorMessage = 'Storage Access Denied';
+        errorDescription = 'Check if Firebase Storage is enabled and rules are deployed. See REPORT_UPLOAD_TROUBLESHOOTING.md';
+      } else if (err?.code === 'storage/quota-exceeded') {
+        errorMessage = 'Storage Quota Exceeded';
+        errorDescription = 'Firebase Storage quota has been exceeded. Contact administrator.';
+      } else if (err?.code === 'storage/canceled') {
+        errorMessage = 'Upload Canceled';
+        errorDescription = 'The file upload was canceled.';
+      } else if (err?.code === 'storage/unknown') {
+        errorMessage = 'Storage Error';
+        errorDescription = 'Unknown storage error. Check Firebase configuration.';
+      } else if (err?.message) {
+        errorMessage = 'Upload Failed';
+        errorDescription = err.message;
+      }
+      
+      setError(errorDescription);
       toast({
-        title: 'Submission Failed',
-        description: 'There was an error submitting your document.',
+        title: errorMessage,
+        description: errorDescription,
         variant: 'destructive',
       });
     } finally {

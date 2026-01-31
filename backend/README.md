@@ -52,11 +52,17 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # Setup environment variables
+# Note: Use the ROOT .env file (not backend/.env)
+cd ..
 cp .env.example .env
 # Edit .env and add your GROQ_API_KEY
+cd backend
 ```
 
 ## ⚙️ Configuration
+
+**⚠️ Important**: This project uses a **single `.env` file** at the project root. 
+Do NOT create separate `.env` files in `backend/` or `mcp-server/` directories.
 
 1. **Get Groq API Key**:
    - Visit [Groq Console](https://console.groq.com/keys)
@@ -65,9 +71,11 @@ cp .env.example .env
 
 2. **Configure Environment**:
    ```bash
-   # Edit .env file
+   # Edit ROOT .env file (d:\uni-research-portal\.env)
    GROQ_API_KEY=your_actual_groq_api_key_here
    ```
+
+The backend automatically loads environment variables from the root `.env` file.
 
 ## 🏃‍♂️ Running the Server
 

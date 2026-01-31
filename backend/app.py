@@ -18,9 +18,13 @@ import io
 from pathlib import Path
 import re
 from dotenv import load_dotenv
+import os
+from pathlib import Path
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from root .env file
+root_dir = Path(__file__).parent.parent
+env_path = root_dir / '.env'
+load_dotenv(dotenv_path=env_path)
 
 # Import utility functions
 from utils import (
@@ -805,6 +809,87 @@ async def mcp_orchestrate_clustering(
             status_code=500,
             detail=f"MCP orchestration failed: {str(e)}"
         )
+
+@app.post("/api/generate-research-gaps")
+async def generate_research_gaps_endpoint(
+    base_paper_title: str = Query(..., description="Title of the base paper"),
+    base_paper_abstract: str = Query(..., description="Abstract of the base paper"),
+    related_papers_data: str = Query(..., description="JSON array of related papers"),
+    domain: str = Query(default="Computer Science")
+):
+    """
+    Generate research gaps using Groq AI
+    """
+    try:
+        from groq import Groq
+        import json
+        
+        if not GROQ_API_KEY:
+            raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
+        
+        client = Groq(api_key=GROQ_API_KEY)
+        
+        # Parse related papers
+        try:
+            related_papers = json.loads(related_papers_data)
+        except:
+            related_papers = []
+        
+        # Build context for Groq
+        papers_context = "\n\n".join([
+            f"Paper {i+1}: {p.get('title', 'Unknown')}\nAbstract: {p.get('abstract', 'No abstract')[:300]}"
+            for i, p in enumerate(related_papers[:10])
+        ])
+        
+        prompt = f"""You are a research analyst. Analyze the following base paper and related work to identify research gaps.
+
+Base Paper: {base_paper_title}
+Abstract: {base_paper_abstract}
+
+Related Work:
+{papers_context}
+
+Identify 3-5 specific research gaps. For each gap, provide:
+1. A clear title
+2. Detailed description (2-3 sentences)
+3. Justification based on the papers
+4. Confidence score (0-1)
+
+Return ONLY a JSON array with this structure:
+[{{"title": "...", "description": "...", "justification": "...", "confidence": 0.8, "category": "methodology|dataset|application|theory"}}]"""
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=2048
+        )
+        
+        result_text = response.choices[0].message.content
+        
+        # Try to parse JSON from response
+        try:
+            # Extract JSON if wrapped in markdown code blocks
+            if "```json" in result_text:
+                result_text = result_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in result_text:
+                result_text = result_text.split("```")[1].split("```")[0].strip()
+            
+            gaps = json.loads(result_text)
+            
+            return {
+                "success": True,
+                "gaps": gaps,
+                "model_used": "llama-3.3-70b-versatile"
+            }
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse Groq response as JSON: {e}")
+            logger.error(f"Response text: {result_text}")
+            raise HTTPException(status_code=500, detail=f"Failed to parse AI response: {str(e)}")
+        
+    except Exception as e:
+        logger.error(f"Research gap generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/mcp/orchestrate-gaps")
 async def mcp_orchestrate_gap_analysis(

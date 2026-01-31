@@ -9,12 +9,15 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Loader2 } from 'lucide-react';
 
 const Login: React.FC = () => {
+  const [mode, setMode] = useState<'student' | 'staff'>('student');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [studentUsn, setStudentUsn] = useState('');
+  const [studentDob, setStudentDob] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   
-  const { login, user } = useAuth();
+  const { login, loginStudent, user } = useAuth();
   const navigate = useNavigate();
 
   // Redirect if already logged in
@@ -22,6 +25,7 @@ const Login: React.FC = () => {
     if (user) {
       let redirectPath = '/student-dashboard';
       if (user.role === 'teacher') redirectPath = '/teacher-dashboard';
+      if (user.role === 'department_admin' || user.role === 'admin') redirectPath = '/admin-dashboard';
       if (user.role === 'reprography_admin') redirectPath = '/reprography-dashboard';
       navigate(redirectPath, { replace: true });
     }
@@ -31,21 +35,26 @@ const Login: React.FC = () => {
     e.preventDefault();
     setError('');
 
-    // Validation
-    if (!email || !password) {
-      setError('Please fill in all fields');
-      return;
-    }
-
-    if (!/\S+@\S+\.\S+/.test(email)) {
-      setError('Please enter a valid email address');
-      return;
-    }
-
     setLoading(true);
 
     try {
-      await login(email, password);
+      if (mode === 'student') {
+        if (!studentUsn || !studentDob) {
+          setError('Please enter your USN and Date of Birth');
+          return;
+        }
+        await loginStudent(studentUsn.trim().toUpperCase(), studentDob);
+      } else {
+        if (!email || !password) {
+          setError('Please fill in all fields');
+          return;
+        }
+        if (!/\S+@\S+\.\S+/.test(email)) {
+          setError('Please enter a valid email address');
+          return;
+        }
+        await login(email, password);
+      }
       // Navigation will be handled by the useEffect above
     } catch (err: any) {
       setError(err.message || 'Failed to login. Please try again.');
@@ -79,6 +88,26 @@ const Login: React.FC = () => {
             <CardDescription>
               Sign in to your account to continue
             </CardDescription>
+            <div className="flex items-center justify-center space-x-2 pt-3">
+              <Button
+                type="button"
+                variant={mode === 'student' ? 'default' : 'outline'}
+                onClick={() => { setMode('student'); setError(''); }}
+                disabled={loading}
+                className="w-32"
+              >
+                Student
+              </Button>
+              <Button
+                type="button"
+                variant={mode === 'staff' ? 'default' : 'outline'}
+                onClick={() => { setMode('staff'); setError(''); }}
+                disabled={loading}
+                className="w-32"
+              >
+                Staff/Admin
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -89,31 +118,62 @@ const Login: React.FC = () => {
               </Alert>
             )}
             
-            <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                placeholder="Enter your email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                disabled={loading}
-                required
-              />
-            </div>
+            {mode === 'student' ? (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="usn">USN</Label>
+                  <Input
+                    id="usn"
+                    type="text"
+                    placeholder="Enter your USN"
+                    value={studentUsn}
+                    onChange={(e) => setStudentUsn(e.target.value)}
+                    disabled={loading}
+                    className="uppercase"
+                    required
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="dob">Date of Birth</Label>
+                  <Input
+                    id="dob"
+                    type="date"
+                    value={studentDob}
+                    onChange={(e) => setStudentDob(e.target.value)}
+                    disabled={loading}
+                    required
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="email">Email</Label>
+                  <Input
+                    id="email"
+                    type="email"
+                    placeholder="Enter your email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    disabled={loading}
+                    required
+                  />
+                </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                placeholder="Enter your password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={loading}
-                required
-              />
-            </div>
+                <div className="space-y-2">
+                  <Label htmlFor="password">Password</Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    placeholder="Enter your password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    disabled={loading}
+                    required
+                  />
+                </div>
+              </>
+            )}
 
             <Button
               type="submit"
@@ -131,14 +191,7 @@ const Login: React.FC = () => {
             </Button>
           </form>
         </CardContent>
-        <CardFooter className="flex flex-col space-y-2">
-          <div className="text-sm text-center text-muted-foreground">
-            Don't have an account?{' '}
-            <Link to="/signup" className="text-primary hover:underline font-medium">
-              Sign up
-            </Link>
-          </div>
-        </CardFooter>
+        {/* Signup disabled - accounts must be created by admin */}
       </Card>
     </div>
   );
