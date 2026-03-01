@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { StudentApprovalRequestForm } from './StudentApprovalRequestForm';
 import { StudentApprovalStatus } from './StudentApprovalStatus';
 import { TeacherApprovalTable } from './TeacherApprovalTable';
 import { UserCircle, ClipboardCheck } from "lucide-react"
@@ -77,24 +76,13 @@ export function ApprovalsPrinting() {
             </CardContent>
           </Card>
 
-          <Tabs defaultValue="request" className="space-y-6">
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="request" className="flex items-center gap-2">
-                <ClipboardCheck className="h-4 w-4" />
-                Request Approvals
-              </TabsTrigger>
+          <Tabs defaultValue="status" className="space-y-6">
+            <TabsList className="grid w-full grid-cols-1">
               <TabsTrigger value="status" className="flex items-center gap-2">
                 <UserCircle className="h-4 w-4" />
                 My Status
               </TabsTrigger>
             </TabsList>
-
-            <TabsContent value="request">
-              <StudentApprovalRequestForm 
-                academicYear={academicYear} 
-                semester={semester} 
-              />
-            </TabsContent>
 
             <TabsContent value="status">
               <StudentApprovalStatus 

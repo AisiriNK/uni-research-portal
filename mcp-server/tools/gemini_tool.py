@@ -7,8 +7,8 @@ import logging
 from typing import Optional, List, Dict
 import asyncio
 from datetime import datetime
-from google import genai
-from google.genai import types
+import google.generativeai as genai
+from google.generativeai import types
 
 from .registry import tool_registry
 from config import settings

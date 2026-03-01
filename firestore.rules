@@ -253,23 +253,40 @@ service cloud.firestore {
       // Teachers can read requests assigned to them
       // Admins can read all requests
       allow read: if isAuthenticated() && (
-        docId.matches('^ND_' + getProfileId() + '_.*') ||  // Student's own request
+        docId.matches('^ND_' + getProfileId() + '_.*') ||  // Student's own request (legacy pattern)
+        resource.data.usn == getProfileId() ||             // Student owns the document (canonical check)
         resource.data.teacherEmployeeId == getProfileId() ||  // Teacher's assigned request
         isAdminUser()  // Admin can see all
       );
       
-      // Students can create no-due requests
-      allow create: if isAuthenticated() 
-                    && isStudent()
-                    && request.resource.data.usn == getProfileId()
-                    && docId.matches('^ND_' + getProfileId() + '_.*');
+      // Students can create their own requests; admins can dispatch on their behalf
+      allow create: if isAuthenticated() && (
+                      (
+                        isStudent() &&
+                        request.resource.data.usn == getProfileId() &&
+                        docId.matches('^ND_' + getProfileId() + '_.*')
+                      ) ||
+                      (
+                        isAdminUser() &&
+                        request.resource.data.usn is string &&
+                        docId.matches('^ND_' + request.resource.data.usn + '_.*')
+                      )
+                    );
       
-      // Teachers can update status of their assigned requests
-      allow update: if isAuthenticated() 
-                    && isTeacher()
-                    && resource.data.teacherEmployeeId == getProfileId()
-                    && request.resource.data.usn == resource.data.usn  // Can't change student
-                    && request.resource.data.teacherEmployeeId == resource.data.teacherEmployeeId;  // Can't reassign
+      // Teachers can update status of their assigned requests; admins can regenerate without reassigning
+      allow update: if isAuthenticated() && (
+                      (
+                        isTeacher()
+                        && resource.data.teacherEmployeeId == getProfileId()
+                        && request.resource.data.usn == resource.data.usn  // Can't change student
+                        && request.resource.data.teacherEmployeeId == resource.data.teacherEmployeeId  // Can't reassign
+                      ) ||
+                      (
+                        isAdminUser()
+                        && request.resource.data.usn == resource.data.usn
+                        && request.resource.data.teacherEmployeeId == resource.data.teacherEmployeeId
+                      )
+                    );
       
       // Only admins can delete requests
       allow delete: if isAdminUser();
@@ -384,7 +401,10 @@ service cloud.firestore {
       // Teachers can read approval requests assigned to them
       allow read: if isAuthenticated() && (
         resource.data.studentId == request.auth.uid ||
-        resource.data.teacherId == request.auth.uid
+        resource.data.teacherId == request.auth.uid ||
+        resource.data.teacherId == getProfileId() ||
+        resource.data.teacherEmail == request.auth.token.email ||
+        isAdminUser()
       );
       
       // Only students can create approval requests
@@ -396,8 +416,9 @@ service cloud.firestore {
       // - Teachers can update approval status (approve/reject)
       // - Students can resubmit their own rejected requests
       allow update: if isAuthenticated() && (
-        (getUserRole() == 'teacher' && resource.data.teacherId == request.auth.uid) ||
-        (getUserRole() == 'student' && resource.data.studentId == request.auth.uid && resource.data.status == 'rejected')
+        (getUserRole() == 'teacher' && (resource.data.teacherId == request.auth.uid || resource.data.teacherId == getProfileId() || resource.data.teacherEmail == request.auth.token.email)) ||
+        (getUserRole() == 'student' && resource.data.studentId == request.auth.uid && resource.data.status == 'rejected') ||
+        isAdminUser()
       );
       
       // No one can delete approval requests (maintain audit trail)

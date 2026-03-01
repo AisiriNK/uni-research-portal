@@ -8,15 +8,43 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { LogOut, User, Mail, Shield, Building2, Users, GraduationCap, BookOpen, Plus, Upload } from 'lucide-react';
+import { Checkbox } from '@/components/ui/checkbox';
+import { LogOut, User, Mail, Shield, Building2, Users, GraduationCap, BookOpen, Plus, Upload, Sparkles, Send, AlertTriangle, CheckCircle2, Loader2, ClipboardList } from 'lucide-react';
 import { adminAccountManagementService } from '@/services/adminAccountManagementService';
 import { getAcademicContext, updateAcademicContext } from '@/services/adminService';
+import { generateNoDueRequests } from '@/services/noDueAutomationService';
 import { calculateSemester, AcademicContext } from '@/types/schema';
 import { collection, doc, getDoc, getDocs, onSnapshot, orderBy, query, setDoc, where, serverTimestamp } from 'firebase/firestore';
 import { db } from '@/config/firebase';
 
 const SECTION_OPTIONS = ['A', 'B', 'C', 'D', 'E', 'F'];
 const SEMESTER_OPTIONS = Array.from({ length: 8 }, (_, i) => i + 1);
+
+type EligibleStudentRecord = {
+  id: string;
+  usn: string;
+  name: string;
+  section: string;
+  mentorEmployeeId?: string;
+  currentSemester: number | null;
+};
+
+type BatchGenerationResult = {
+  usn: string;
+  name: string;
+  requestsCreated: number;
+  errors: string[];
+  success: boolean;
+};
+
+type SubjectAssignmentRow = {
+  subjectCode: string;
+  subjectName: string;
+  section: string;
+  teacherEmployeeId: string;
+  teacherName: string;
+  subjectType: 'core' | 'open_elective';
+};
 
 const AdminDashboard: React.FC = () => {
   const { user, logout } = useAuth();
@@ -99,6 +127,37 @@ const AdminDashboard: React.FC = () => {
     subjectCode: ''
   });
 
+  const [assignmentDialogOpen, setAssignmentDialogOpen] = useState(false);
+  const [assignmentFilters, setAssignmentFilters] = useState({
+    departmentId: isSuperAdmin ? '' : user?.departmentId || '',
+    batchYear: String(new Date().getFullYear()),
+    semesterNumber: '1',
+  });
+  const [assignmentLoading, setAssignmentLoading] = useState(false);
+  const [assignmentError, setAssignmentError] = useState<string | null>(null);
+  const [coreAssignments, setCoreAssignments] = useState<SubjectAssignmentRow[]>([]);
+  const [openElectiveAssignments, setOpenElectiveAssignments] = useState<SubjectAssignmentRow[]>([]);
+  const [assignmentsFetched, setAssignmentsFetched] = useState(false);
+
+  const [noDueDialogOpen, setNoDueDialogOpen] = useState(false);
+  const [noDueForm, setNoDueForm] = useState<{
+    departmentId: string;
+    batchYear: string;
+    semesterNumber: number;
+    section: string;
+  }>({
+    departmentId: isSuperAdmin ? '' : user?.departmentId || '',
+    batchYear: String(new Date().getFullYear()),
+    semesterNumber: 1,
+    section: 'A',
+  });
+  const [eligibleStudents, setEligibleStudents] = useState<EligibleStudentRecord[]>([]);
+  const [eligibleLoading, setEligibleLoading] = useState(false);
+  const [eligibleError, setEligibleError] = useState<string | null>(null);
+  const [selectedUsns, setSelectedUsns] = useState<string[]>([]);
+  const [generatingNoDue, setGeneratingNoDue] = useState(false);
+  const [generationResults, setGenerationResults] = useState<BatchGenerationResult[] | null>(null);
+
   const [entityCounts, setEntityCounts] = useState({ students: 0, teachers: 0 });
   const [countsLoading, setCountsLoading] = useState(true);
   const [countsError, setCountsError] = useState<string | null>(null);
@@ -154,6 +213,18 @@ const AdminDashboard: React.FC = () => {
       });
     }
   }, [academicContext]);
+
+  useEffect(() => {
+    if (isDeptAdmin && user?.departmentId) {
+      setNoDueForm((prev) => ({ ...prev, departmentId: user.departmentId }));
+    }
+  }, [isDeptAdmin, user?.departmentId]);
+
+  useEffect(() => {
+    if (!isSuperAdmin && user?.departmentId) {
+      setAssignmentFilters((prev) => ({ ...prev, departmentId: user.departmentId }));
+    }
+  }, [isSuperAdmin, user?.departmentId]);
 
   useEffect(() => {
     if (!user) {
@@ -264,6 +335,171 @@ const AdminDashboard: React.FC = () => {
     }
   };
 
+  const loadNoDueEligibleStudents = async () => {
+    if (!academicContext) {
+      toast({
+        title: 'Academic context required',
+        description: 'Set the active academic year and semester before dispatching no-due requests.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const targetDepartment = isSuperAdmin ? noDueForm.departmentId : departmentScope;
+    if (!targetDepartment) {
+      toast({
+        title: 'Choose a department',
+        description: 'Select which department this cohort belongs to.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const batchYearValue = parseInt(noDueForm.batchYear, 10);
+    if (Number.isNaN(batchYearValue)) {
+      toast({
+        title: 'Invalid batch year',
+        description: 'Enter a valid batch year (e.g., 2021).',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setEligibleLoading(true);
+    setEligibleError(null);
+    setGenerationResults(null);
+
+    try {
+      const studentsRef = collection(db, 'students');
+      const studentsQuery = query(studentsRef, where('departmentId', '==', targetDepartment));
+      const snapshot = await getDocs(studentsQuery);
+      const normalizedSection = noDueForm.section.trim().toUpperCase();
+
+      const mapped: EligibleStudentRecord[] = [];
+
+      snapshot.docs.forEach((docSnap) => {
+        const student = { id: docSnap.id, ...(docSnap.data() as any) };
+        const studentBatch = typeof student.batchYear === 'number'
+          ? student.batchYear
+          : parseInt(student.batchYear, 10);
+        if (Number.isNaN(studentBatch) || studentBatch !== batchYearValue) {
+          return;
+        }
+
+        const studentSection = (student.section || '').trim().toUpperCase();
+        if (studentSection !== normalizedSection) {
+          return;
+        }
+
+        const currentSemester = deriveSemesterForStudent(student);
+        if (currentSemester !== noDueForm.semesterNumber) {
+          return;
+        }
+
+        mapped.push({
+          id: student.id,
+          usn: student.usn,
+          name: student.name || 'Unnamed Student',
+          section: student.section,
+          mentorEmployeeId: student.mentorEmployeeId,
+          currentSemester,
+        });
+      });
+
+      if (mapped.length === 0) {
+        setEligibleError('No students matched this department, batch year, section, and semester.');
+      }
+
+      setEligibleStudents(mapped);
+      setSelectedUsns(mapped.map((student) => student.usn));
+    } catch (error) {
+      console.error('Error loading no-due cohort:', error);
+      setEligibleError('Unable to load students for this cohort.');
+    } finally {
+      setEligibleLoading(false);
+    }
+  };
+
+  const handleStudentSelectionChange = (usn: string, checked: boolean | 'indeterminate') => {
+    setSelectedUsns((prev) => {
+      if (checked === true || checked === 'indeterminate') {
+        return prev.includes(usn) ? prev : [...prev, usn];
+      }
+      return prev.filter((item) => item !== usn);
+    });
+  };
+
+  const handleSelectAllEligible = (checked: boolean | 'indeterminate') => {
+    if (checked === true || checked === 'indeterminate') {
+      setSelectedUsns(eligibleStudents.map((student) => student.usn));
+      return;
+    }
+    setSelectedUsns([]);
+  };
+
+  const handleGenerateNoDueDispatch = async () => {
+    if (eligibleStudents.length === 0) {
+      toast({
+        title: 'No roster loaded',
+        description: 'Fetch the cohort before dispatching requests.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (selectedUsns.length === 0) {
+      toast({
+        title: 'Select at least one student',
+        description: 'Choose the students you want to include in this dispatch.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setGeneratingNoDue(true);
+    setGenerationResults(null);
+
+    const results: BatchGenerationResult[] = [];
+
+    for (const student of eligibleStudents) {
+      if (!selectedUsns.includes(student.usn)) {
+        continue;
+      }
+
+      try {
+        const response = await generateNoDueRequests(student.usn);
+        results.push({
+          usn: student.usn,
+          name: student.name,
+          requestsCreated: response.requestsCreated,
+          errors: response.errors,
+          success: response.success && response.errors.length === 0,
+        });
+      } catch (error) {
+        console.error('Error dispatching no-due requests:', error);
+        results.push({
+          usn: student.usn,
+          name: student.name,
+          requestsCreated: 0,
+          errors: [error instanceof Error ? error.message : 'Unknown error'],
+          success: false,
+        });
+      }
+    }
+
+    setGenerationResults(results);
+    setGeneratingNoDue(false);
+
+    const successCount = results.filter((result) => result.success).length;
+    const issueCount = results.length - successCount;
+
+    toast({
+      title: 'No-due requests dispatched',
+      description: `${successCount} student${successCount === 1 ? '' : 's'} processed${issueCount ? `, ${issueCount} issue${issueCount === 1 ? '' : 's'} detected` : ''}.`,
+      variant: issueCount ? 'destructive' : 'default',
+    });
+  };
+
   const filteredStudentList = useMemo(() => {
     return studentList.filter((student) => {
       const matchesName = studentFilters.name
@@ -293,6 +529,26 @@ const AdminDashboard: React.FC = () => {
       return matchesName && matchesId;
     });
   }, [teacherList, teacherFilters]);
+
+  const selectedEligibleStudents = useMemo(() => {
+    return eligibleStudents.filter((student) => selectedUsns.includes(student.usn));
+  }, [eligibleStudents, selectedUsns]);
+
+  const missingMentorSelected = useMemo(() => {
+    return selectedEligibleStudents.filter((student) => !student.mentorEmployeeId).length;
+  }, [selectedEligibleStudents]);
+
+  const generationSummary = useMemo(() => {
+    if (!generationResults || generationResults.length === 0) {
+      return null;
+    }
+    const totalStudents = generationResults.length;
+    const totalRequests = generationResults.reduce((sum, result) => sum + result.requestsCreated, 0);
+    const cleanSuccess = generationResults.filter((result) => result.success && result.errors.length === 0).length;
+    const partial = generationResults.filter((result) => !result.success && result.requestsCreated > 0).length;
+    const failures = generationResults.filter((result) => result.requestsCreated === 0).length;
+    return { totalStudents, totalRequests, cleanSuccess, partial, failures };
+  }, [generationResults]);
 
   useEffect(() => {
     if (viewStudentsOpen) {
@@ -604,6 +860,144 @@ const AdminDashboard: React.FC = () => {
     }
   };
 
+  const loadTeacherAssignments = async () => {
+    const departmentId = isSuperAdmin ? assignmentFilters.departmentId : user?.departmentId;
+    if (!departmentId) {
+      toast({
+        title: 'Select a department',
+        description: 'Choose which department to inspect before loading assignments.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const batchYearValue = parseInt(assignmentFilters.batchYear, 10);
+    const semesterNumberValue = parseInt(assignmentFilters.semesterNumber, 10);
+
+    if (Number.isNaN(batchYearValue)) {
+      toast({
+        title: 'Invalid batch year',
+        description: 'Enter a valid batch year to continue.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (Number.isNaN(semesterNumberValue)) {
+      toast({
+        title: 'Invalid semester',
+        description: 'Select which semester you want to inspect.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setAssignmentsFetched(true);
+    setAssignmentLoading(true);
+    setAssignmentError(null);
+    setCoreAssignments([]);
+    setOpenElectiveAssignments([]);
+
+    try {
+      const mappingsQuery = query(
+        collection(db, 'core_subject_teacher_mapping'),
+        where('departmentId', '==', departmentId),
+        where('batchYear', '==', batchYearValue),
+        where('semesterNumber', '==', semesterNumberValue)
+      );
+      const mappingsSnap = await getDocs(mappingsQuery);
+      const mappingDocs = mappingsSnap.docs.map((docSnap) => docSnap.data() as any);
+
+      const curriculumQuery = query(
+        collection(db, 'curriculum'),
+        where('departmentId', '==', departmentId),
+        where('batchYear', '==', batchYearValue),
+        where('semesterNumber', '==', semesterNumberValue)
+      );
+      const curriculumSnap = await getDocs(curriculumQuery);
+      const curriculumMap = new Map<string, string>();
+      curriculumSnap.docs.forEach((docSnap) => {
+        const data = docSnap.data() as any;
+        curriculumMap.set(data.subjectCode, data.subjectName || data.subjectCode);
+      });
+
+      const electivesQuery = query(
+        collection(db, 'open_elective_offerings'),
+        where('departmentId', '==', departmentId),
+        where('batchYear', '==', batchYearValue),
+        where('semesterNumber', '==', semesterNumberValue)
+      );
+      const electivesSnap = await getDocs(electivesQuery);
+      const electiveDocs = electivesSnap.docs.map((docSnap) => docSnap.data() as any);
+
+      const teacherIds = new Set<string>();
+      mappingDocs.forEach((item) => {
+        if (item.teacherEmployeeId) {
+          teacherIds.add(item.teacherEmployeeId);
+        }
+      });
+      electiveDocs.forEach((item) => {
+        if (item.teacherEmployeeId) {
+          teacherIds.add(item.teacherEmployeeId);
+        }
+      });
+
+      const teacherEntries = await Promise.all(
+        Array.from(teacherIds).map(async (employeeId) => {
+          const teacherRef = doc(db, 'teachers', employeeId);
+          const teacherSnap = await getDoc(teacherRef);
+          return teacherSnap.exists() ? { employeeId, ...(teacherSnap.data() as any) } : { employeeId };
+        })
+      );
+
+      const teacherMap = new Map<string, { name?: string }>();
+      teacherEntries.forEach((entry) => {
+        if (entry) {
+          teacherMap.set(entry.employeeId, { name: entry.name });
+        }
+      });
+
+      const coreRows: SubjectAssignmentRow[] = mappingDocs.map((mapping: any) => ({
+        subjectCode: mapping.subjectCode,
+        subjectName: curriculumMap.get(mapping.subjectCode) || mapping.subjectCode,
+        section: mapping.section || '—',
+        teacherEmployeeId: mapping.teacherEmployeeId,
+        teacherName: teacherMap.get(mapping.teacherEmployeeId)?.name || mapping.teacherEmployeeId,
+        subjectType: 'core',
+      }));
+
+      coreRows.sort((a, b) => {
+        if (a.section === b.section) {
+          return a.subjectCode.localeCompare(b.subjectCode);
+        }
+        return a.section.localeCompare(b.section);
+      });
+
+      const electiveRows: SubjectAssignmentRow[] = electiveDocs.map((offering: any) => ({
+        subjectCode: offering.subjectCode,
+        subjectName: offering.subjectName || offering.subjectCode,
+        section: offering.section || '—',
+        teacherEmployeeId: offering.teacherEmployeeId,
+        teacherName: teacherMap.get(offering.teacherEmployeeId)?.name || offering.teacherEmployeeId,
+        subjectType: 'open_elective',
+      }));
+
+      electiveRows.sort((a, b) => a.subjectCode.localeCompare(b.subjectCode));
+
+      setCoreAssignments(coreRows);
+      setOpenElectiveAssignments(electiveRows);
+
+      if (coreRows.length === 0 && electiveRows.length === 0) {
+        setAssignmentError('No teacher mappings found for the selected semester.');
+      }
+    } catch (error) {
+      console.error('Error loading teacher assignments:', error);
+      setAssignmentError('Unable to load teacher assignments. Please try again.');
+    } finally {
+      setAssignmentLoading(false);
+    }
+  };
+
   if (!user) {
     return null;
   }
@@ -784,6 +1178,24 @@ const AdminDashboard: React.FC = () => {
             <CardContent>
               <Button className="w-full" variant="outline">
                 View Reports
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* Teacher Assignment Viewer */}
+          <Card className="hover:shadow-lg transition-shadow cursor-pointer border-l-4 border-l-purple-500">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <ClipboardList className="h-10 w-10 text-purple-600" />
+              </div>
+              <CardTitle className="mt-4">Teacher Assignments</CardTitle>
+              <CardDescription>
+                See subject-wise faculty and open electives
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button className="w-full" variant="outline" onClick={() => setAssignmentDialogOpen(true)}>
+                View Assignments
               </Button>
             </CardContent>
           </Card>
@@ -979,6 +1391,174 @@ const AdminDashboard: React.FC = () => {
                   )}
                 </tbody>
               </table>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={assignmentDialogOpen}
+          onOpenChange={(open) => {
+            setAssignmentDialogOpen(open);
+            if (!open) {
+              setAssignmentError(null);
+              setCoreAssignments([]);
+              setOpenElectiveAssignments([]);
+              setAssignmentsFetched(false);
+              setAssignmentLoading(false);
+            }
+          }}
+        >
+          <DialogContent className="max-w-4xl">
+            <DialogHeader>
+              <DialogTitle>Teacher Assignments</DialogTitle>
+              <DialogDescription>
+                Subject-to-faculty map for the selected batch, semester, and department.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-3">
+                <div className="space-y-2">
+                  <Label>Department</Label>
+                  {isSuperAdmin ? (
+                    <Select
+                      value={assignmentFilters.departmentId}
+                      onValueChange={(value) => setAssignmentFilters((prev) => ({ ...prev, departmentId: value }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select department" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {departments
+                          .filter((dept) => dept !== 'ALL')
+                          .map((dept) => (
+                            <SelectItem key={dept} value={dept}>
+                              {dept}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Input value={user?.departmentId || 'N/A'} disabled className="bg-gray-100" />
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <Label>Batch Year</Label>
+                  <Input
+                    type="number"
+                    value={assignmentFilters.batchYear}
+                    onChange={(e) => setAssignmentFilters((prev) => ({ ...prev, batchYear: e.target.value }))}
+                    placeholder="2022"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Semester</Label>
+                  <Select
+                    value={assignmentFilters.semesterNumber}
+                    onValueChange={(value) => setAssignmentFilters((prev) => ({ ...prev, semesterNumber: value }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SEMESTER_OPTIONS.map((sem) => (
+                        <SelectItem key={sem} value={String(sem)}>
+                          Semester {sem}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <Button variant="outline" onClick={loadTeacherAssignments} disabled={assignmentLoading}>
+                  {assignmentLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Loading...
+                    </>
+                  ) : (
+                    'Load assignments'
+                  )}
+                </Button>
+                {assignmentError && !assignmentLoading && (
+                  <span className="text-sm text-red-600">{assignmentError}</span>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <h4 className="text-sm font-semibold text-muted-foreground">Core Subjects</h4>
+                  {assignmentLoading ? (
+                    <div className="py-6 text-center text-sm text-muted-foreground">Fetching mappings...</div>
+                  ) : coreAssignments.length === 0 ? (
+                    <div className="py-4 text-sm text-muted-foreground">
+                      {assignmentsFetched ? 'No core subject assignments found.' : 'Load assignments to view current mappings.'}
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto rounded-lg border">
+                      <table className="min-w-full text-sm">
+                        <thead className="bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-600">
+                          <tr>
+                            <th className="px-4 py-3">Subject Name</th>
+                            <th className="px-4 py-3">Code</th>
+                            <th className="px-4 py-3">Section</th>
+                            <th className="px-4 py-3">Teacher</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {coreAssignments.map((row) => (
+                            <tr key={`${row.subjectCode}_${row.section}`} className="border-t">
+                              <td className="px-4 py-3 font-medium">{row.subjectName}</td>
+                              <td className="px-4 py-3 font-mono text-xs uppercase">{row.subjectCode}</td>
+                              <td className="px-4 py-3">{row.section}</td>
+                              <td className="px-4 py-3">
+                                <span className="font-medium">{row.teacherName}</span>
+                                <span className="ml-2 text-xs text-muted-foreground">{row.teacherEmployeeId}</span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <h4 className="text-sm font-semibold text-muted-foreground">Open Electives</h4>
+                  {assignmentLoading ? (
+                    <div className="py-6 text-center text-sm text-muted-foreground">Fetching offerings...</div>
+                  ) : openElectiveAssignments.length === 0 ? (
+                    <div className="py-4 text-sm text-muted-foreground">
+                      {assignmentsFetched ? 'No open elective offerings configured for this semester.' : 'Load assignments to view open elective faculty.'}
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto rounded-lg border">
+                      <table className="min-w-full text-sm">
+                        <thead className="bg-gray-50 text-left text-xs font-semibold uppercase tracking-wide text-gray-600">
+                          <tr>
+                            <th className="px-4 py-3">Subject Name</th>
+                            <th className="px-4 py-3">Code</th>
+                            <th className="px-4 py-3">Teacher</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {openElectiveAssignments.map((row) => (
+                            <tr key={row.subjectCode} className="border-t">
+                              <td className="px-4 py-3 font-medium">{row.subjectName}</td>
+                              <td className="px-4 py-3 font-mono text-xs uppercase">{row.subjectCode}</td>
+                              <td className="px-4 py-3">
+                                <span className="font-medium">{row.teacherName}</span>
+                                <span className="ml-2 text-xs text-muted-foreground">{row.teacherEmployeeId}</span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           </DialogContent>
         </Dialog>
@@ -1688,6 +2268,10 @@ const AdminDashboard: React.FC = () => {
                 </>
               )}
 
+                <Button variant="default" onClick={() => setNoDueDialogOpen(true)}>
+                  <Sparkles className="mr-2 h-4 w-4" />
+                  Dispatch No-Due Requests
+                </Button>
               <Button variant="outline">
                 <Upload className="mr-2 h-4 w-4" />
                 Bulk Upload Students
@@ -1699,6 +2283,246 @@ const AdminDashboard: React.FC = () => {
             </div>
           </CardContent>
         </Card>
+
+        <Dialog open={noDueDialogOpen} onOpenChange={setNoDueDialogOpen}>
+          <DialogContent className="max-w-5xl">
+            <DialogHeader>
+              <DialogTitle>Dispatch No-Due Requests</DialogTitle>
+              <DialogDescription>
+                Auto-route every clearance to its mapped faculty, mentor, and common clearance owners for the selected cohort.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-5">
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+                <p className="font-semibold">Routing overview</p>
+                <p className="mt-1">
+                  Requests are generated per subject, open elective, mentor, and shared clearances (library, fees, sports, certificates).
+                  Make sure curriculum, teacher mappings, and open elective choices are up to date before dispatching.
+                </p>
+                {academicContext ? (
+                  <p className="mt-2 text-xs text-blue-800">
+                    Active context: {academicContext.academicYear} • {academicContext.semesterType.toUpperCase()} semester
+                  </p>
+                ) : (
+                  <p className="mt-2 text-xs text-red-700">
+                    Academic context is missing. Update it from the quick actions panel before proceeding.
+                  </p>
+                )}
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                {isSuperAdmin && (
+                  <div className="space-y-2">
+                    <Label>Department *</Label>
+                    <Select
+                      value={noDueForm.departmentId}
+                      onValueChange={(value) => setNoDueForm((prev) => ({ ...prev, departmentId: value }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select department" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {departments
+                          .filter((dept) => dept !== 'ALL')
+                          .map((dept) => (
+                            <SelectItem key={dept} value={dept}>
+                              {dept}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                <div className="space-y-2">
+                  <Label>Batch Year *</Label>
+                  <Input
+                    type="number"
+                    value={noDueForm.batchYear}
+                    onChange={(e) =>
+                      setNoDueForm((prev) => ({
+                        ...prev,
+                        batchYear: e.target.value,
+                      }))
+                    }
+                    placeholder="2021"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Semester *</Label>
+                  <Select
+                    value={noDueForm.semesterNumber.toString()}
+                    onValueChange={(value) =>
+                      setNoDueForm((prev) => ({ ...prev, semesterNumber: parseInt(value, 10) }))
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SEMESTER_OPTIONS.map((sem) => (
+                        <SelectItem key={sem} value={sem.toString()}>
+                          Semester {sem}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Section *</Label>
+                  <Select
+                    value={noDueForm.section}
+                    onValueChange={(value) => setNoDueForm((prev) => ({ ...prev, section: value }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SECTION_OPTIONS.map((section) => (
+                        <SelectItem key={section} value={section}>
+                          Section {section}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-3">
+                <Button variant="outline" onClick={loadNoDueEligibleStudents} disabled={eligibleLoading}>
+                  {eligibleLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Fetching cohort...
+                    </>
+                  ) : (
+                    'Fetch Cohort'
+                  )}
+                </Button>
+                <Button
+                  onClick={handleGenerateNoDueDispatch}
+                  disabled={generatingNoDue || eligibleStudents.length === 0 || selectedUsns.length === 0}
+                >
+                  {generatingNoDue ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Sending requests...
+                    </>
+                  ) : (
+                    <>
+                      <Send className="mr-2 h-4 w-4" />
+                      Send Requests
+                    </>
+                  )}
+                </Button>
+              </div>
+
+              {eligibleError && (
+                <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                  <AlertTriangle className="mt-0.5 h-4 w-4" />
+                  <span>{eligibleError}</span>
+                </div>
+              )}
+
+              {eligibleStudents.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
+                    <span>
+                      {selectedUsns.length} of {eligibleStudents.length} student{eligibleStudents.length === 1 ? '' : 's'}
+                       a0selected
+                    </span>
+                    <label className="inline-flex items-center gap-2 text-xs font-medium text-foreground">
+                      <Checkbox
+                        checked={selectedUsns.length > 0 && selectedUsns.length === eligibleStudents.length}
+                        onCheckedChange={handleSelectAllEligible}
+                      />
+                      Select all
+                    </label>
+                  </div>
+                  <div className="max-h-[280px] overflow-y-auto rounded-lg border divide-y">
+                    {eligibleStudents.map((student) => {
+                      const isChecked = selectedUsns.includes(student.usn);
+                      const missingMentor = !student.mentorEmployeeId;
+                      return (
+                        <div key={student.usn} className="flex items-center gap-3 px-4 py-2">
+                          <Checkbox
+                            checked={isChecked}
+                            onCheckedChange={(value) => handleStudentSelectionChange(student.usn, value)}
+                          />
+                          <div className="flex-1">
+                            <p className="font-medium">{student.name}</p>
+                            <p className="text-xs font-mono uppercase text-muted-foreground">
+                              {student.usn} • Section {student.section}
+                            </p>
+                          </div>
+                          {missingMentor && (
+                            <span className="rounded-full bg-amber-100 px-2 py-1 text-xs text-amber-800">
+                              Mentor missing
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {missingMentorSelected > 0 && (
+                    <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                      {missingMentorSelected} selected student{missingMentorSelected === 1 ? '' : 's'} do not have a mentor mapped.
+                      Mentor clearance will remain pending for them until the mapping is updated.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {generationSummary && generationResults && generationResults.length > 0 && (
+                <div className="space-y-3 rounded-lg border border-green-200 bg-green-50 p-4">
+                  <div className="flex flex-col gap-1 text-sm text-green-900 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="h-4 w-4" />
+                      <span>
+                        {generationSummary.totalRequests.toLocaleString()} request{generationSummary.totalRequests === 1 ? '' : 's'}
+                         a0queued for {generationSummary.totalStudents} student{generationSummary.totalStudents === 1 ? '' : 's'}.
+                      </span>
+                    </div>
+                    <div className="text-xs text-green-800">
+                      {generationSummary.cleanSuccess} clean • {generationSummary.partial} partial • {generationSummary.failures} blocked
+                    </div>
+                  </div>
+                  <div className="max-h-[240px] overflow-y-auto divide-y divide-green-200 rounded-md border border-green-200 bg-white">
+                    {generationResults.map((result) => {
+                      const statusClass = result.success && result.errors.length === 0
+                        ? 'text-green-600'
+                        : result.requestsCreated > 0
+                          ? 'text-amber-600'
+                          : 'text-red-600';
+                      const statusLabel = result.success && result.errors.length === 0
+                        ? 'Complete'
+                        : result.requestsCreated > 0 && result.errors.length > 0
+                          ? 'Partial'
+                          : 'Blocked';
+                      return (
+                        <div key={result.usn} className="px-4 py-3">
+                          <div className="flex items-center justify-between text-sm">
+                            <span className="font-semibold">{result.name}</span>
+                            <span className={statusClass}>{statusLabel}</span>
+                          </div>
+                          <p className="text-xs font-mono uppercase text-muted-foreground">{result.usn}</p>
+                          <p className="text-xs text-muted-foreground">{result.requestsCreated} request{result.requestsCreated === 1 ? '' : 's'} queued.</p>
+                          {result.errors.length > 0 && (
+                            <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-red-700">
+                              {result.errors.map((message, index) => (
+                                <li key={index}>{message}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
       </main>
     </div>
   );

@@ -217,18 +217,33 @@ export async function getOpenElectiveTeacher(
   departmentId: string,
   batchYear: number,
   semesterNumber: number,
-  subjectCode: string
+  subjectCode: string,
+  section?: string
 ): Promise<string> {
   const docId = `${departmentId}_${batchYear}_${semesterNumber}_${subjectCode}`;
   const docRef = doc(db, COLLECTIONS.OPEN_ELECTIVE_OFFERINGS, docId);
   const docSnap = await getDoc(docRef);
   
-  if (!docSnap.exists()) {
-    throw new Error(`Open elective ${subjectCode} not offered`);
+  if (docSnap.exists()) {
+    const offering = docSnap.data() as OpenElectiveOffering;
+    return offering.teacherEmployeeId;
+  }
+
+  if (section) {
+    const fallbackId = `${departmentId}_${batchYear}_${semesterNumber}_${section}_${subjectCode}`;
+    const fallbackRef = doc(db, COLLECTIONS.CORE_SUBJECT_TEACHER_MAPPING, fallbackId);
+    const fallbackSnap = await getDoc(fallbackRef);
+    if (fallbackSnap.exists()) {
+      const mapping = fallbackSnap.data() as CoreSubjectTeacherMapping;
+      console.warn('[getOpenElectiveTeacher] fallback to core mapping for elective', {
+        subjectCode,
+        section,
+      });
+      return mapping.teacherEmployeeId;
+    }
   }
   
-  const offering = docSnap.data() as OpenElectiveOffering;
-  return offering.teacherEmployeeId;
+  throw new Error(`Open elective ${subjectCode} not offered`);
 }
 
 /**
@@ -325,7 +340,8 @@ export async function generateNoDueRequests(usn: string): Promise<{
           student.departmentId,
           student.batchYear,
           currentSemester,
-          electiveChoice.subjectCode
+          electiveChoice.subjectCode,
+          student.section
         );
         
         const requestId = generateNoDueRequestId(usn, electiveChoice.subjectCode);
@@ -443,6 +459,10 @@ export async function getStudentNoDueRequests(usn: string): Promise<NoDueRequest
   );
   
   const querySnap = await getDocs(q);
+  console.log('[NoDueAutomationService] getStudentNoDueRequests snapshot', {
+    usn,
+    count: querySnap.size,
+  });
   const requests: NoDueRequestWithDetails[] = [];
   
   for (const docSnap of querySnap.docs) {
@@ -450,6 +470,12 @@ export async function getStudentNoDueRequests(usn: string): Promise<NoDueRequest
     
     // Fetch teacher details
     const teacher = await getTeacher(request.teacherEmployeeId);
+    console.log('[NoDueAutomationService] Hydrated request', {
+      docId: docSnap.id,
+      status: request.status,
+      teacherEmployeeId: request.teacherEmployeeId,
+      teacherFound: Boolean(teacher),
+    });
     
     requests.push({
       ...request,
@@ -513,7 +539,14 @@ export async function approveNoDueRequest(requestId: string): Promise<void> {
   }, { merge: true });
   
   // Check if this was the last pending teacher approval
-  await checkAndUpdateMentorApprovalStatus(request.usn);
+  try {
+    await checkAndUpdateMentorApprovalStatus(request.usn);
+  } catch (error) {
+    // Teachers only have access to their own documents; skip mentor aggregation if access is denied
+    if (import.meta.env.DEV) {
+      console.warn('[approveNoDueRequest] mentor aggregation skipped', error);
+    }
+  }
 }
 
 /**

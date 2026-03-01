@@ -11,6 +11,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/config/firebase';
 import { ApprovalRequest, CreateApprovalRequestData, UpdateApprovalData } from '@/types/approval';
+import { logNoDueEvent } from '@/lib/logging';
 
 const APPROVALS_COLLECTION = 'noDueApprovals';
 
@@ -30,6 +31,11 @@ export async function createApprovalRequest(
   requestData: CreateApprovalRequestData
 ): Promise<string> {
   try {
+    logNoDueEvent('approval:create_start', {
+      studentId: studentData.id,
+      teacherId: requestData.teacherId,
+      category: requestData.category,
+    });
     const approval = {
       studentId: studentData.id,
       studentName: studentData.name,
@@ -57,8 +63,15 @@ export async function createApprovalRequest(
     };
     
     const docRef = await addDoc(collection(db, APPROVALS_COLLECTION), approval);
+    logNoDueEvent('approval:create_success', {
+      approvalId: docRef.id,
+      studentId: studentData.id,
+      teacherId: requestData.teacherId,
+    });
     return docRef.id;
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logNoDueEvent('approval:create_error', { studentId: studentData.id, message }, 'error');
     console.error('Error creating approval request:', error);
     throw new Error('Failed to create approval request');
   }
@@ -69,6 +82,7 @@ export async function createApprovalRequest(
  */
 export async function getStudentApprovals(studentId: string): Promise<ApprovalRequest[]> {
   try {
+    logNoDueEvent('student_approvals:fetch_start', { studentId });
     const q = query(
       collection(db, APPROVALS_COLLECTION),
       where('studentId', '==', studentId)
@@ -88,12 +102,16 @@ export async function getStudentApprovals(studentId: string): Promise<ApprovalRe
     });
     
     // Sort by requested date (newest first)
-    return approvals.sort((a, b) => {
+    const ordered = approvals.sort((a, b) => {
       const dateA = a.requestedAt?.getTime() || 0;
       const dateB = b.requestedAt?.getTime() || 0;
       return dateB - dateA;
     });
+    logNoDueEvent('student_approvals:fetch_success', { studentId, count: ordered.length });
+    return ordered;
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logNoDueEvent('student_approvals:fetch_error', { studentId, message }, 'error');
     console.error('Error getting student approvals:', error);
     throw new Error('Failed to fetch approvals');
   }
@@ -102,11 +120,12 @@ export async function getStudentApprovals(studentId: string): Promise<ApprovalRe
 /**
  * Get all approval requests for a teacher
  */
-export async function getTeacherApprovals(teacherId: string): Promise<ApprovalRequest[]> {
+export async function getTeacherApprovals(teacherIdentifier: string): Promise<ApprovalRequest[]> {
   try {
+    logNoDueEvent('teacher_approvals:fetch_start', { teacherId: teacherIdentifier });
     const q = query(
       collection(db, APPROVALS_COLLECTION),
-      where('teacherId', '==', teacherId)
+      where('teacherId', '==', teacherIdentifier)
     );
     
     const querySnapshot = await getDocs(q);
@@ -123,12 +142,16 @@ export async function getTeacherApprovals(teacherId: string): Promise<ApprovalRe
     });
     
     // Sort by requested date (newest first)
-    return approvals.sort((a, b) => {
+    const ordered = approvals.sort((a, b) => {
       const dateA = a.requestedAt?.getTime() || 0;
       const dateB = b.requestedAt?.getTime() || 0;
       return dateB - dateA;
     });
+    logNoDueEvent('teacher_approvals:fetch_success', { teacherId: teacherIdentifier, count: ordered.length });
+    return ordered;
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logNoDueEvent('teacher_approvals:fetch_error', { teacherId: teacherIdentifier, message }, 'error');
     console.error('Error getting teacher approvals:', error);
     throw new Error('Failed to fetch approvals');
   }
@@ -142,6 +165,7 @@ export async function updateApprovalStatus(
   updateData: UpdateApprovalData
 ): Promise<void> {
   try {
+    logNoDueEvent('approval:update_start', { approvalId, status: updateData.status });
     const approvalRef = doc(db, APPROVALS_COLLECTION, approvalId);
     
     const update: any = {
@@ -154,7 +178,10 @@ export async function updateApprovalStatus(
     }
     
     await updateDoc(approvalRef, update);
+    logNoDueEvent('approval:update_success', { approvalId, status: updateData.status });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logNoDueEvent('approval:update_error', { approvalId, message }, 'error');
     console.error('Error updating approval:', error);
     throw new Error('Failed to update approval');
   }
@@ -165,6 +192,7 @@ export async function updateApprovalStatus(
  */
 export async function checkAllApprovalsComplete(studentId: string, academicYear: string, semester: string): Promise<boolean> {
   try {
+    logNoDueEvent('approvals:completion_check_start', { studentId, academicYear, semester });
     const approvals = await getStudentApprovals(studentId);
     const relevantApprovals = approvals.filter(
       a => a.academicYear === academicYear && a.semester === semester
@@ -172,8 +200,18 @@ export async function checkAllApprovalsComplete(studentId: string, academicYear:
     
     if (relevantApprovals.length === 0) return false;
     
-    return relevantApprovals.every(a => a.status === 'approved');
+    const allApproved = relevantApprovals.every(a => a.status === 'approved');
+    logNoDueEvent('approvals:completion_check_result', {
+      studentId,
+      academicYear,
+      semester,
+      approvalsChecked: relevantApprovals.length,
+      allApproved,
+    });
+    return allApproved;
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logNoDueEvent('approvals:completion_check_error', { studentId, academicYear, semester, message }, 'error');
     console.error('Error checking approvals:', error);
     return false;
   }
@@ -187,6 +225,7 @@ export async function resubmitApprovalRequest(
   newComments: string
 ): Promise<void> {
   try {
+    logNoDueEvent('approval:resubmit_start', { approvalId });
     const approvalRef = doc(db, APPROVALS_COLLECTION, approvalId);
     const approvalSnap = await getDoc(approvalRef);
     
@@ -209,7 +248,10 @@ export async function resubmitApprovalRequest(
       resubmissionCount: (currentData.resubmissionCount || 0) + 1,
       resubmittedAt: Timestamp.now(),
     });
+    logNoDueEvent('approval:resubmit_success', { approvalId });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logNoDueEvent('approval:resubmit_error', { approvalId, message }, 'error');
     console.error('Error resubmitting approval request:', error);
     throw error;
   }
@@ -224,13 +266,23 @@ export async function getApprovedApprovalsForCertificate(
   semester: string
 ): Promise<ApprovalRequest[]> {
   try {
+    logNoDueEvent('approvals:certificate_fetch_start', { studentId, academicYear, semester });
     const approvals = await getStudentApprovals(studentId);
-    return approvals.filter(
+    const approved = approvals.filter(
       a => a.academicYear === academicYear && 
            a.semester === semester && 
            a.status === 'approved'
     );
+    logNoDueEvent('approvals:certificate_fetch_success', {
+      studentId,
+      academicYear,
+      semester,
+      count: approved.length,
+    });
+    return approved;
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logNoDueEvent('approvals:certificate_fetch_error', { studentId, academicYear, semester, message }, 'error');
     console.error('Error getting approved approvals:', error);
     throw new Error('Failed to fetch approved approvals');
   }

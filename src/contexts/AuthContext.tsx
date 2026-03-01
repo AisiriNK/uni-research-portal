@@ -32,6 +32,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const normalizeDobInput = (dobInput: string): string => {
+    const trimmed = dobInput.trim();
+    if (!trimmed) {
+      return trimmed;
+    }
+
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(trimmed)) {
+      const [day, month, year] = trimmed.split('/');
+      return `${year}-${month}-${day}`;
+    }
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      return trimmed;
+    }
+
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+      const year = parsed.getUTCFullYear();
+      const month = String(parsed.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(parsed.getUTCDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+
+    return trimmed;
+  };
+
   /**
    * Fetch user data from Firestore using new schema
    * 
@@ -188,6 +214,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     try {
+      const normalizedDob = normalizeDobInput(dob);
+
       // Check if student exists and verify DOB
       const studentRef = doc(db, 'students', usn);
       const studentSnap = await getDoc(studentRef);
@@ -199,42 +227,66 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const studentData = studentSnap.data();
       
       // Verify Date of Birth
-      if (studentData.dateOfBirth !== dob) {
+      if (studentData.dateOfBirth !== normalizedDob) {
         throw new Error('Invalid Date of Birth. Please check and try again.');
       }
       
-      // Generate email for Firebase Auth (usn@university.edu)
-      const email = `${usn.toLowerCase()}@university.edu`;
-      
-      // Use DOB as password for Firebase Auth
-      // If Firebase Auth account doesn't exist, create it
-      try {
-        const userCredential = await signInWithEmailAndPassword(auth, email, dob);
-        const userData = await fetchUserData(userCredential.user);
-        
-        if (!userData) {
+      // Generate canonical login email (fallback) and collect historical emails to try
+      const generatedEmail = `${usn.toLowerCase()}@university.edu`;
+      const preferredEmail = studentData.email?.toLowerCase();
+      const authEmails = Array.from(
+        new Set(
+          [preferredEmail, generatedEmail].filter(
+            (email): email is string => Boolean(email)
+          )
+        )
+      );
+      const password = normalizedDob;
+
+      const attemptLogin = async (emailToUse: string) => {
+        const credential = await signInWithEmailAndPassword(auth, emailToUse, password);
+        const profile = await fetchUserData(credential.user);
+
+        if (!profile) {
           throw new Error('User profile not found. Please contact support.');
         }
-        
-        setUser(userData);
-      } catch (authError: any) {
-        if (authError.code === 'auth/user-not-found') {
-          // Create Firebase Auth account for student
-          const userCredential = await createUserWithEmailAndPassword(auth, email, dob);
-          
-          // Create users reference document
-          await setDoc(doc(db, 'users', userCredential.user.uid), {
-            email,
-            role: 'student',
-            profileId: usn,
-            createdAt: serverTimestamp(),
-          });
-          
-          const userData = await fetchUserData(userCredential.user);
-          setUser(userData);
-        } else {
+
+        setUser(profile);
+      };
+
+      let lastAuthError: any = null;
+
+      for (const emailToTry of authEmails) {
+        try {
+          await attemptLogin(emailToTry as string);
+          return;
+        } catch (authError: any) {
+          lastAuthError = authError;
+          if (authError.code === 'auth/user-not-found') {
+            continue;
+          }
           throw authError;
         }
+      }
+
+      if (lastAuthError?.code === 'auth/user-not-found' || !authEmails.length) {
+        const creationEmail = preferredEmail || generatedEmail;
+        const userCredential = await createUserWithEmailAndPassword(auth, creationEmail, password);
+
+        await setDoc(doc(db, 'users', userCredential.user.uid), {
+          email: creationEmail,
+          role: 'student',
+          profileId: usn,
+          createdAt: serverTimestamp(),
+        });
+
+        const userData = await fetchUserData(userCredential.user);
+        setUser(userData);
+        return;
+      }
+      
+      if (lastAuthError) {
+        throw lastAuthError;
       }
     } catch (error: any) {
       if (error.code === 'auth/invalid-credential' || error.code === 'auth/wrong-password') {

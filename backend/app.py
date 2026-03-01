@@ -132,6 +132,14 @@ class SearchRequest(BaseModel):
     year_from: Optional[int] = Field(default=2015, ge=1900)
     year_to: Optional[int] = Field(default=2024, le=2030)
 
+
+class ClientLogEntry(BaseModel):
+    source: str = Field(default="client")
+    event: str
+    level: str = Field(default="info")
+    details: Optional[Dict[str, Any]] = None
+    timestamp: Optional[datetime] = None
+
 def convert_paper_to_response(paper: Paper) -> PaperResponse:
     """Convert internal Paper object to API response format"""
     return PaperResponse(
@@ -275,6 +283,29 @@ async def search_papers(
     except Exception as e:
         logger.error(f"Error in search_papers: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/logs")
+async def ingest_client_log(entry: ClientLogEntry):
+    """Receive client-side logs and surface them in the server terminal."""
+    level = entry.level.lower()
+    level = "warning" if level == "warn" else level
+    log_fn = getattr(logger, level, logger.info)
+    details_text = ""
+    if entry.details:
+        try:
+            details_text = json.dumps(entry.details, default=str)
+        except TypeError:
+            details_text = str(entry.details)
+
+    message = f"[CLIENT LOG][{entry.source}] {entry.event}"
+    if details_text:
+        message += f" | details={details_text}"
+    if entry.timestamp:
+        message += f" | client_ts={entry.timestamp.isoformat()}"
+
+    log_fn(message)
+    return {"status": "logged"}
 
 # Document processing utility functions
 def load_latex_template():
@@ -810,7 +841,7 @@ async def mcp_orchestrate_clustering(
             detail=f"MCP orchestration failed: {str(e)}"
         )
 
-@app.post("/api/generate-research-gaps")
+@app.api_route("/api/generate-research-gaps", methods=["GET", "POST"])
 async def generate_research_gaps_endpoint(
     base_paper_title: str = Query(..., description="Title of the base paper"),
     base_paper_abstract: str = Query(..., description="Abstract of the base paper"),

@@ -1,14 +1,20 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { LogOut, User, Mail, GraduationCap, Building2 } from 'lucide-react';
+import { StudentApprovalStatus } from '@/components/StudentApprovalStatus';
+import { getAcademicContext } from '@/services/noDueAutomationService';
+import { calculateSemester } from '@/types/schema';
 
 const StudentDashboard: React.FC = () => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const [academicYear, setAcademicYear] = useState('');
+  const [semester, setSemester] = useState('');
+  const [contextLoading, setContextLoading] = useState(true);
 
   const handleLogout = async () => {
     try {
@@ -19,9 +25,50 @@ const StudentDashboard: React.FC = () => {
     }
   };
 
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadContext = async () => {
+      if (!user || user.role !== 'student') {
+        setContextLoading(false);
+        return;
+      }
+
+      try {
+        const context = await getAcademicContext();
+        if (!isMounted) {
+          return;
+        }
+
+        setAcademicYear(context.academicYear);
+        const semesterNumber = calculateSemester(
+          user.batchYear,
+          context.academicYear,
+          context.semesterType
+        );
+        setSemester(String(semesterNumber));
+      } catch (error) {
+        console.error('Failed to load academic context:', error);
+      } finally {
+        if (isMounted) {
+          setContextLoading(false);
+        }
+      }
+    };
+
+    loadContext();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user]);
+
   if (!user || user.role !== 'student') {
     return null;
   }
+
+  const resolvedAcademicYear = academicYear || new Date().getFullYear().toString();
+  const resolvedSemester = semester || '';
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
@@ -129,6 +176,31 @@ const StudentDashboard: React.FC = () => {
               </Button>
             </CardContent>
           </Card>
+
+          <div className="space-y-4">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+              <div>
+                <h3 className="text-xl font-semibold">No-Due Clearance Status</h3>
+                <p className="text-sm text-muted-foreground">
+                  {academicYear
+                    ? `${academicYear} · Semester ${semester || 'All'}`
+                    : 'Loading academic context...'}
+                </p>
+              </div>
+            </div>
+            {contextLoading ? (
+              <Card className="shadow-lg">
+                <CardContent className="py-8 text-center text-muted-foreground">
+                  Loading your no-due requests...
+                </CardContent>
+              </Card>
+            ) : (
+              <StudentApprovalStatus
+                academicYear={resolvedAcademicYear}
+                semester={resolvedSemester}
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>

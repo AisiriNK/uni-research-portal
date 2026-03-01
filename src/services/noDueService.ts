@@ -13,6 +13,7 @@ import {
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '@/config/firebase';
 import { NoDueSubmission, CreateSubmissionData, UpdateSubmissionData } from '@/types/nodue';
+import { logNoDueEvent } from '@/lib/logging';
 
 const SUBMISSIONS_COLLECTION = 'noDueSubmissions';
 
@@ -23,11 +24,19 @@ export async function uploadSubmissionPDF(file: File, studentId: string): Promis
   const timestamp = Date.now();
   const fileName = `${studentId}_${timestamp}_${file.name}`;
   const storageRef = ref(storage, `no-due-submissions/${studentId}/${fileName}`);
-  
-  const snapshot = await uploadBytes(storageRef, file);
-  const url = await getDownloadURL(snapshot.ref);
-  
-  return { url, name: file.name };
+  logNoDueEvent('submission:upload_start', { studentId, fileName });
+
+  try {
+    const snapshot = await uploadBytes(storageRef, file);
+    const url = await getDownloadURL(snapshot.ref);
+    logNoDueEvent('submission:upload_success', { studentId, fileName });
+    
+    return { url, name: file.name };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logNoDueEvent('submission:upload_error', { studentId, fileName, message }, 'error');
+    throw error;
+  }
 }
 
 /**
@@ -44,6 +53,11 @@ export async function createSubmission(
   submissionData: CreateSubmissionData
 ): Promise<string> {
   try {
+    logNoDueEvent('submission:create_start', {
+      studentId: studentData.id,
+      teacherId: submissionData.teacherId,
+      category: submissionData.metadata?.category,
+    });
     // Upload PDF first
     const { url, name } = await uploadSubmissionPDF(submissionData.pdfFile, studentData.id);
     
@@ -71,8 +85,11 @@ export async function createSubmission(
     };
     
     const docRef = await addDoc(collection(db, SUBMISSIONS_COLLECTION), submission);
+    logNoDueEvent('submission:create_success', { submissionId: docRef.id, studentId: studentData.id });
     return docRef.id;
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logNoDueEvent('submission:create_error', { studentId: studentData.id, message }, 'error');
     console.error('Error creating submission:', error);
     throw new Error('Failed to create submission');
   }
@@ -83,6 +100,7 @@ export async function createSubmission(
  */
 export async function getStudentSubmissions(studentId: string): Promise<NoDueSubmission[]> {
   try {
+    logNoDueEvent('student_submissions:fetch_start', { studentId });
     const q = query(
       collection(db, SUBMISSIONS_COLLECTION),
       where('studentId', '==', studentId)
@@ -103,12 +121,16 @@ export async function getStudentSubmissions(studentId: string): Promise<NoDueSub
     });
     
     // Sort in memory instead of using orderBy (avoids index requirement)
-    return submissions.sort((a, b) => {
+    const ordered = submissions.sort((a, b) => {
       const dateA = a.createdAt?.getTime() || 0;
       const dateB = b.createdAt?.getTime() || 0;
       return dateB - dateA; // desc order
     });
+    logNoDueEvent('student_submissions:fetch_success', { studentId, count: ordered.length });
+    return ordered;
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logNoDueEvent('student_submissions:fetch_error', { studentId, message }, 'error');
     console.error('Error getting student submissions:', error);
     throw new Error('Failed to fetch submissions');
   }
@@ -119,6 +141,7 @@ export async function getStudentSubmissions(studentId: string): Promise<NoDueSub
  */
 export async function getTeacherSubmissions(teacherId: string): Promise<NoDueSubmission[]> {
   try {
+    logNoDueEvent('teacher_submissions:fetch_start', { teacherId });
     const q = query(
       collection(db, SUBMISSIONS_COLLECTION),
       where('teacherId', '==', teacherId)
@@ -139,12 +162,16 @@ export async function getTeacherSubmissions(teacherId: string): Promise<NoDueSub
     });
     
     // Sort in memory instead of using orderBy (avoids index requirement)
-    return submissions.sort((a, b) => {
+    const ordered = submissions.sort((a, b) => {
       const dateA = a.createdAt?.getTime() || 0;
       const dateB = b.createdAt?.getTime() || 0;
       return dateB - dateA; // desc order
     });
+    logNoDueEvent('teacher_submissions:fetch_success', { teacherId, count: ordered.length });
+    return ordered;
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logNoDueEvent('teacher_submissions:fetch_error', { teacherId, message }, 'error');
     console.error('Error getting teacher submissions:', error);
     throw new Error('Failed to fetch submissions');
   }
@@ -158,6 +185,7 @@ export async function updateSubmissionStatus(
   updateData: UpdateSubmissionData
 ): Promise<void> {
   try {
+    logNoDueEvent('submission:update_start', { submissionId, status: updateData.status });
     const submissionRef = doc(db, SUBMISSIONS_COLLECTION, submissionId);
     
     await updateDoc(submissionRef, {
@@ -166,7 +194,10 @@ export async function updateSubmissionStatus(
       reviewedAt: Timestamp.fromDate(updateData.reviewedAt),
       updatedAt: Timestamp.now(),
     });
+    logNoDueEvent('submission:update_success', { submissionId, status: updateData.status });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logNoDueEvent('submission:update_error', { submissionId, message }, 'error');
     console.error('Error updating submission:', error);
     throw new Error('Failed to update submission');
   }
@@ -177,6 +208,7 @@ export async function updateSubmissionStatus(
  */
 export async function getAllTeachers(): Promise<Array<{id: string, name: string, email: string, dept: string}>> {
   try {
+    logNoDueEvent('teachers:fetch_start');
     const querySnapshot = await getDocs(collection(db, 'teachers'));
     const teachers: Array<{id: string, name: string, email: string, dept: string}> = [];
     
@@ -190,8 +222,12 @@ export async function getAllTeachers(): Promise<Array<{id: string, name: string,
       });
     });
     
-    return teachers.sort((a, b) => a.name.localeCompare(b.name));
+    const ordered = teachers.sort((a, b) => a.name.localeCompare(b.name));
+    logNoDueEvent('teachers:fetch_success', { count: ordered.length });
+    return ordered;
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logNoDueEvent('teachers:fetch_error', { message }, 'error');
     console.error('Error getting teachers:', error);
     throw new Error('Failed to fetch teachers');
   }

@@ -7,17 +7,21 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { Loader2, CheckCircle, XCircle, Clock, MessageSquare } from 'lucide-react';
-import { getTeacherApprovals, updateApprovalStatus } from '@/services/approvalService';
-import { ApprovalRequest } from '@/types/approval';
+import { Loader2, CheckCircle, XCircle, Clock } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
+import {
+  getTeacherNoDueRequests,
+  approveNoDueRequest,
+  rejectNoDueRequest,
+} from '@/services/noDueAutomationService';
+import { NoDueRequestWithDetails, generateNoDueRequestId } from '@/types/schema';
 import { format } from 'date-fns';
 
 export function TeacherApprovalTable() {
   const { userProfile } = useAuth();
-  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
+  const [approvals, setApprovals] = useState<NoDueRequestWithDetails[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedApproval, setSelectedApproval] = useState<ApprovalRequest | null>(null);
+  const [selectedApproval, setSelectedApproval] = useState<NoDueRequestWithDetails | null>(null);
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
   const [rejectionReason, setRejectionReason] = useState('');
   const [processing, setProcessing] = useState(false);
@@ -29,16 +33,38 @@ export function TeacherApprovalTable() {
   }, [userProfile]);
 
   const loadApprovals = async () => {
-    if (!userProfile) return;
+    if (!userProfile) {
+      return;
+    }
+
+    if (userProfile.role !== 'teacher') {
+      toast({
+        title: 'Restricted',
+        description: 'Only teacher accounts can view pending no-due requests.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const teacherIdentifier = userProfile.employeeId || userProfile.empId;
+
+    if (!teacherIdentifier) {
+      toast({
+        title: 'Profile missing employee ID',
+        description: 'Update the teacher profile with an employee ID to view requests.',
+        variant: 'destructive',
+      });
+      return;
+    }
 
     try {
       setLoading(true);
-      const data = await getTeacherApprovals(userProfile.uid);
+      const data = await getTeacherNoDueRequests(teacherIdentifier);
       setApprovals(data);
     } catch (error) {
       toast({
         title: 'Error',
-        description: 'Failed to load approval requests',
+        description: 'Failed to load no-due requests',
         variant: 'destructive',
       });
     } finally {
@@ -46,17 +72,15 @@ export function TeacherApprovalTable() {
     }
   };
 
-  const handleApprove = async (approval: ApprovalRequest) => {
+  const handleApprove = async (approval: NoDueRequestWithDetails) => {
     try {
       setProcessing(true);
-      await updateApprovalStatus(approval.id, {
-        status: 'approved',
-        respondedAt: new Date(),
-      });
+      const requestId = generateNoDueRequestId(approval.usn, approval.referenceId);
+      await approveNoDueRequest(requestId);
 
       toast({
         title: 'Approved',
-        description: `Approved no-due for ${approval.studentName}`,
+        description: `Cleared ${approval.studentName}'s ${formatCategoryLabel(approval)}`,
       });
 
       loadApprovals();
@@ -71,7 +95,7 @@ export function TeacherApprovalTable() {
     }
   };
 
-  const handleRejectClick = (approval: ApprovalRequest) => {
+  const handleRejectClick = (approval: NoDueRequestWithDetails) => {
     setSelectedApproval(approval);
     setRejectionReason('');
     setRejectDialogOpen(true);
@@ -89,15 +113,12 @@ export function TeacherApprovalTable() {
 
     try {
       setProcessing(true);
-      await updateApprovalStatus(selectedApproval.id, {
-        status: 'rejected',
-        rejectionReason: rejectionReason.trim(),
-        respondedAt: new Date(),
-      });
+      const requestId = generateNoDueRequestId(selectedApproval.usn, selectedApproval.referenceId);
+      await rejectNoDueRequest(requestId, rejectionReason.trim());
 
       toast({
         title: 'Rejected',
-        description: `Rejected request from ${selectedApproval.studentName}`,
+        description: `Rejected ${selectedApproval.studentName}'s ${formatCategoryLabel(selectedApproval)}`,
       });
 
       setRejectDialogOpen(false);
@@ -113,19 +134,57 @@ export function TeacherApprovalTable() {
     }
   };
 
-  const getStatusBadge = (status: string) => {
+  const getStatusBadge = (status: NoDueRequestWithDetails['status']) => {
     switch (status) {
       case 'approved':
-        return <Badge className="bg-green-100 text-green-800"><CheckCircle className="mr-1 h-3 w-3" />Approved</Badge>;
+      case 'mentor_approved':
+      case 'completed':
+        return (
+          <Badge className="bg-green-100 text-green-800">
+            <CheckCircle className="mr-1 h-3 w-3" />Approved
+          </Badge>
+        );
+      case 'pending_mentor_approval':
+        return (
+          <Badge className="bg-blue-100 text-blue-800">
+            <Clock className="mr-1 h-3 w-3" />Mentor Pending
+          </Badge>
+        );
       case 'rejected':
-        return <Badge className="bg-red-100 text-red-800"><XCircle className="mr-1 h-3 w-3" />Rejected</Badge>;
+      case 'mentor_rejected':
+        return (
+          <Badge className="bg-red-100 text-red-800">
+            <XCircle className="mr-1 h-3 w-3" />Rejected
+          </Badge>
+        );
       default:
-        return <Badge className="bg-yellow-100 text-yellow-800"><Clock className="mr-1 h-3 w-3" />Pending</Badge>;
+        return (
+          <Badge className="bg-yellow-100 text-yellow-800">
+            <Clock className="mr-1 h-3 w-3" />Pending
+          </Badge>
+        );
+    }
+  };
+
+  const formatCategoryLabel = (request: NoDueRequestWithDetails) => {
+    switch (request.referenceType) {
+      case 'core_subject':
+        return `Core • ${request.referenceId}`;
+      case 'open_elective':
+        return `Open Elective • ${request.referenceId}`;
+      case 'common_clearance':
+        return `Common • ${request.referenceId}`;
+      case 'mentor':
+        return 'Mentor Clearance';
+      default:
+        return request.referenceId;
     }
   };
 
   const pendingApprovals = approvals.filter(a => a.status === 'pending');
   const processedApprovals = approvals.filter(a => a.status !== 'pending');
+  const approvedCount = approvals.filter((a) => ['approved', 'mentor_approved', 'completed'].includes(a.status)).length;
+  const rejectedCount = approvals.filter((a) => ['rejected', 'mentor_rejected'].includes(a.status)).length;
 
   if (loading) {
     return (
@@ -153,7 +212,7 @@ export function TeacherApprovalTable() {
           <Card>
             <CardContent className="p-4">
               <div className="text-center">
-                <p className="text-2xl font-bold text-green-600">{approvals.filter(a => a.status === 'approved').length}</p>
+                <p className="text-2xl font-bold text-green-600">{approvedCount}</p>
                 <p className="text-sm text-muted-foreground">Approved</p>
               </div>
             </CardContent>
@@ -161,7 +220,7 @@ export function TeacherApprovalTable() {
           <Card>
             <CardContent className="p-4">
               <div className="text-center">
-                <p className="text-2xl font-bold text-red-600">{approvals.filter(a => a.status === 'rejected').length}</p>
+                <p className="text-2xl font-bold text-red-600">{rejectedCount}</p>
                 <p className="text-sm text-muted-foreground">Rejected</p>
               </div>
             </CardContent>
@@ -185,64 +244,58 @@ export function TeacherApprovalTable() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Student</TableHead>
-                    <TableHead>Reg No</TableHead>
+                    <TableHead>USN</TableHead>
                     <TableHead>Category</TableHead>
-                    <TableHead>Details</TableHead>
-                    <TableHead>Comments</TableHead>
+                    <TableHead>Section</TableHead>
                     <TableHead>Requested</TableHead>
                     <TableHead>Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {pendingApprovals.map((approval) => (
-                    <TableRow key={approval.id}>
-                      <TableCell className="font-medium">
-                        {approval.studentName}
-                        <div className="text-xs text-muted-foreground">{approval.studentDept}</div>
-                      </TableCell>
-                      <TableCell>{approval.studentRegNo}</TableCell>
-                      <TableCell>
-                        <div className="space-y-1">
-                          <Badge variant="outline">{approval.category.replace('_', ' ')}</Badge>
-                          {approval.isResubmitted && (
-                            <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 text-xs">
-                              Resubmitted {approval.resubmissionCount ? `(${approval.resubmissionCount}x)` : ''}
-                            </Badge>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell>{approval.categoryLabel}</TableCell>
-                      <TableCell className="max-w-xs truncate">
-                        {approval.comments || '-'}
-                      </TableCell>
-                      <TableCell className="text-xs">
-                        {format(approval.requestedAt, 'MMM dd, yyyy')}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Button
-                            size="sm"
-                            onClick={() => handleApprove(approval)}
-                            disabled={processing}
-                            className="bg-green-600 hover:bg-green-700"
-                          >
-                            <CheckCircle className="mr-1 h-3 w-3" />
-                            Approve
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleRejectClick(approval)}
-                            disabled={processing}
-                            className="text-red-600 hover:text-red-700"
-                          >
-                            <XCircle className="mr-1 h-3 w-3" />
-                            Reject
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {pendingApprovals.map((approval) => {
+                    const rowKey = generateNoDueRequestId(approval.usn, approval.referenceId);
+                    return (
+                      <TableRow key={rowKey}>
+                        <TableCell className="font-medium">
+                          {approval.studentName}
+                          <div className="text-xs text-muted-foreground">
+                            {approval.departmentId} • Sem {approval.semesterNumber}
+                          </div>
+                        </TableCell>
+                        <TableCell>{approval.usn}</TableCell>
+                        <TableCell>
+                          <Badge variant="outline">{formatCategoryLabel(approval)}</Badge>
+                        </TableCell>
+                        <TableCell>{approval.section || '-'}</TableCell>
+                        <TableCell className="text-xs">
+                          {format(approval.requestedAt.toDate(), 'MMM dd, yyyy')}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <Button
+                              size="sm"
+                              onClick={() => handleApprove(approval)}
+                              disabled={processing}
+                              className="bg-green-600 hover:bg-green-700"
+                            >
+                              <CheckCircle className="mr-1 h-3 w-3" />
+                              Approve
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleRejectClick(approval)}
+                              disabled={processing}
+                              className="text-red-600 hover:text-red-700"
+                            >
+                              <XCircle className="mr-1 h-3 w-3" />
+                              Reject
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             )}
@@ -264,28 +317,31 @@ export function TeacherApprovalTable() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Student</TableHead>
-                    <TableHead>Reg No</TableHead>
+                    <TableHead>USN</TableHead>
                     <TableHead>Category</TableHead>
                     <TableHead>Status</TableHead>
-                    <TableHead>Responded</TableHead>
-                    <TableHead>Reason</TableHead>
+                    <TableHead>Updated</TableHead>
+                    <TableHead>Notes</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {processedApprovals.map((approval) => (
-                    <TableRow key={approval.id}>
-                      <TableCell className="font-medium">{approval.studentName}</TableCell>
-                      <TableCell>{approval.studentRegNo}</TableCell>
-                      <TableCell>{approval.categoryLabel}</TableCell>
-                      <TableCell>{getStatusBadge(approval.status)}</TableCell>
-                      <TableCell className="text-xs">
-                        {approval.respondedAt && format(approval.respondedAt, 'MMM dd, yyyy')}
-                      </TableCell>
-                      <TableCell className="max-w-xs truncate">
-                        {approval.rejectionReason || '-'}
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {processedApprovals.map((approval) => {
+                    const rowKey = generateNoDueRequestId(approval.usn, approval.referenceId);
+                    return (
+                      <TableRow key={rowKey}>
+                        <TableCell className="font-medium">{approval.studentName}</TableCell>
+                        <TableCell>{approval.usn}</TableCell>
+                        <TableCell>{formatCategoryLabel(approval)}</TableCell>
+                        <TableCell>{getStatusBadge(approval.status)}</TableCell>
+                        <TableCell className="text-xs">
+                          {approval.approvedAt ? format(approval.approvedAt.toDate(), 'MMM dd, yyyy') : '-'}
+                        </TableCell>
+                        <TableCell className="max-w-xs truncate">
+                          {approval.rejectionReason || '-'}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             )}
