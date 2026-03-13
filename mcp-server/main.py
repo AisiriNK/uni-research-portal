@@ -425,10 +425,13 @@ async def get_storage_stats():
     
     # ChromaDB stats
     try:
+        if not chroma_storage._initialized:
+            chroma_storage.initialize()
         count = chroma_storage.papers_collection.count() if chroma_storage._initialized else 0
         stats["chromadb"] = {
             "status": "initialized" if chroma_storage._initialized else "not_initialized",
-            "papers_count": count
+            "papers_count": count,
+            "init_error": getattr(chroma_storage, "_init_error", None)
         }
     except Exception as e:
         stats["chromadb"] = {"status": "error", "message": str(e)}

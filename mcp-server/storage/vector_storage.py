@@ -9,6 +9,8 @@ from datetime import datetime
 import json
 import logging
 import numpy as np
+import os
+from pathlib import Path
 
 from config import settings
 
@@ -23,6 +25,7 @@ class ChromaDBStorage:
         self.papers_collection = None
         self.contexts_collection = None
         self._initialized = False
+        self._init_error: Optional[str] = None
     
     def initialize(self):
         """Initialize ChromaDB"""
@@ -30,9 +33,14 @@ class ChromaDBStorage:
             return
         
         try:
+            self._init_error = None
+            persist_dir = Path(settings.CHROMA_PERSIST_DIR)
+            if not persist_dir.is_absolute():
+                persist_dir = (Path(__file__).parent.parent / persist_dir).resolve()
+            os.makedirs(persist_dir, exist_ok=True)
             # Initialize client
             self.client = chromadb.Client(ChromaSettings(
-                persist_directory=settings.CHROMA_PERSIST_DIR,
+                persist_directory=str(persist_dir),
                 anonymized_telemetry=False
             ))
             
@@ -48,11 +56,12 @@ class ChromaDBStorage:
             )
             
             self._initialized = True
-            logger.info(f"✅ ChromaDB initialized: {self.papers_collection.count()} papers")
+            logger.info(f"✅ ChromaDB initialized: {self.papers_collection.count()} papers (persist_dir={persist_dir})")
             
         except Exception as e:
             logger.error(f"❌ ChromaDB initialization failed: {e}")
             self._initialized = False
+            self._init_error = str(e)
     
     # ============================================================================
     # PAPER MANAGEMENT
@@ -360,11 +369,16 @@ class ChromaDBStorage:
             self.initialize()
         
         try:
+            persist_dir = Path(settings.CHROMA_PERSIST_DIR)
+            if not persist_dir.is_absolute():
+                persist_dir = (Path(__file__).parent.parent / persist_dir).resolve()
             return {
                 "status": "initialized" if self._initialized else "not_initialized",
                 "total_papers": self.papers_collection.count() if self.papers_collection else 0,
                 "total_contexts": self.contexts_collection.count() if self.contexts_collection else 0,
-                "embedding_dimension": settings.EMBEDDING_DIM
+                "embedding_dimension": settings.EMBEDDING_DIM,
+                "init_error": self._init_error,
+                "persist_dir": str(persist_dir)
             }
         except Exception as e:
             logger.error(f"ChromaDB get_stats error: {e}")

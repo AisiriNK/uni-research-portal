@@ -4,7 +4,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai'
 // Initialize Gemini AI with v1 API
 const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY || '')
 
-// Choose the model (use gemini-1.5-flash for faster summaries if preferred)
+// Choose the model (use -flash for faster summaries if preferred)
 const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
 
 export interface PaperSummary {

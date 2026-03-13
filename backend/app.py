@@ -17,6 +17,9 @@ import zipfile
 import io
 from pathlib import Path
 import re
+import subprocess
+import sys
+import base64
 from dotenv import load_dotenv
 import os
 from pathlib import Path
@@ -532,6 +535,56 @@ def create_fallback_chapters(content: str) -> List[ChapterData]:
     
     return chapters
 
+def run_report_pipeline(doc_path: str, project_details: ProjectDetails, dept: str = "") -> Dict[str, Any]:
+    """Run the AI report formatting pipeline script using the uploaded document path and UI metadata."""
+    script_path = Path(__file__).parent / "ai_report_pipeline.py"
+    if not script_path.exists():
+        logger.error("Pipeline script not found at %s", script_path)
+        raise HTTPException(status_code=500, detail="Pipeline script not found")
+
+    team_members_payload = [member.model_dump() for member in project_details.team_members]
+    command = [
+        sys.executable,
+        str(script_path),
+        "--input",
+        doc_path,
+        "--project-title",
+        project_details.title,
+        "--guide-name",
+        project_details.guide,
+        "--year",
+        project_details.year,
+        "--dept",
+        dept or "",
+        "--team-members-json",
+        json.dumps(team_members_payload)
+    ]
+
+    logger.info("Running report pipeline script: %s", " ".join(command))
+
+    # Get timeout from environment or default to 600 seconds (10 minutes)
+    pipeline_timeout = int(os.getenv("PIPELINE_TIMEOUT_SECONDS", "600"))
+    logger.info("Pipeline timeout set to: %d seconds", pipeline_timeout)
+
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=pipeline_timeout)
+    except subprocess.TimeoutExpired:
+        logger.error("Pipeline script timed out after %d seconds", pipeline_timeout)
+        raise HTTPException(status_code=500, detail=f"Pipeline script timed out after {pipeline_timeout} seconds")
+
+    if result.returncode != 0:
+        logger.error("Pipeline script failed: %s", result.stderr)
+        raise HTTPException(status_code=500, detail="Pipeline script failed")
+
+    if result.stdout:
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {"raw_output": result.stdout.strip()}
+
+    return {"status": "ok"}
+
+
 def generate_latex_files(project_details: ProjectDetails, chapters: List[ChapterData]) -> Dict[str, str]:
     """Generate LaTeX files from template and chapter data"""
     
@@ -615,10 +668,11 @@ async def process_document(
     project_title: str = Form(...),
     guide_name: str = Form(...),
     year: str = Form(...),
-    team_members_json: str = Form(...)
+    team_members_json: str = Form(...),
+    dept: str = Form("")
 ):
     """Process uploaded document and generate LaTeX files"""
-    
+    temp_file_path = None
     try:
         # Validate file type
         if not file.filename.endswith(('.doc', '.docx', '.txt')):
@@ -641,6 +695,38 @@ async def process_document(
         
         # Read file content
         content = await file.read()
+
+        # Save file to a temporary path for pipeline execution
+        file_suffix = Path(file.filename).suffix
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_suffix) as tmp_file:
+            tmp_file.write(content)
+            temp_file_path = tmp_file.name
+
+        # Run pipeline script using UI metadata and the uploaded document path
+        pipeline_result = run_report_pipeline(temp_file_path, project_details, dept=dept)
+        logger.info("Pipeline completed: %s", pipeline_result)
+
+        merged_pdf_base64 = None
+        merged_pdf_name = None
+        merged_pdf_path = None
+        if isinstance(pipeline_result, dict):
+            merged_pdf_path = pipeline_result.get("merged_pdf", {}).get("output_path")
+
+        if merged_pdf_path and os.path.exists(merged_pdf_path):
+            with open(merged_pdf_path, "rb") as pdf_file:
+                merged_pdf_base64 = base64.b64encode(pdf_file.read()).decode("utf-8")
+            merged_pdf_name = Path(merged_pdf_path).name
+
+        word_file_base64 = None
+        word_file_name = None
+        merged_docx_path = None
+        if isinstance(pipeline_result, dict):
+            merged_docx_path = pipeline_result.get("merged_docx", {}).get("output_path")
+
+        if merged_docx_path and os.path.exists(merged_docx_path):
+            with open(merged_docx_path, "rb") as docx_file:
+                word_file_base64 = base64.b64encode(docx_file.read()).decode("utf-8")
+            word_file_name = Path(merged_docx_path).name
         
         # Process different file types
         if file.filename.endswith('.txt'):
@@ -701,12 +787,23 @@ async def process_document(
             "message": f"Successfully processed document with {len(chapters)} chapters",
             "chapters": [{"title": ch.title, "content": ch.content[:200] + "..." if len(ch.content) > 200 else ch.content} for ch in chapters],
             "files": generated_files,
-            "file_count": len(generated_files)
+            "file_count": len(generated_files),
+            "pipeline": pipeline_result,
+            "merged_pdf_base64": merged_pdf_base64,
+            "merged_pdf_name": merged_pdf_name,
+            "word_file_base64": word_file_base64,
+            "word_file_name": word_file_name
         }
         
     except Exception as e:
         logger.error(f"Error processing document: {e}")
         raise HTTPException(status_code=500, detail=f"Document processing failed: {str(e)}")
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except OSError:
+                logger.warning("Failed to remove temp file: %s", temp_file_path)
 
 @app.post("/api/download-latex-project")
 async def download_latex_project(
@@ -714,10 +811,11 @@ async def download_latex_project(
     project_title: str = Form(...),
     guide_name: str = Form(...),
     year: str = Form(...),
-    team_members_json: str = Form(...)
+    team_members_json: str = Form(...),
+    dept: str = Form("")
 ):
     """Process document and return a ZIP file with all LaTeX files"""
-    
+    temp_file_path = None
     try:
         # Process the document (reuse the logic from process_document)
         # Parse team members
@@ -733,6 +831,14 @@ async def download_latex_project(
         
         # Read and process document
         content = await file.read()
+        file_suffix = Path(file.filename).suffix
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_suffix) as tmp_file:
+            tmp_file.write(content)
+            temp_file_path = tmp_file.name
+
+        pipeline_result = run_report_pipeline(temp_file_path, project_details, dept=dept)
+        logger.info("Pipeline completed: %s", pipeline_result)
+
         if file.filename.endswith('.txt'):
             document_content = content.decode('utf-8')
         else:
@@ -778,6 +884,12 @@ Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     except Exception as e:
         logger.error(f"Error creating LaTeX project ZIP: {e}")
         raise HTTPException(status_code=500, detail=f"ZIP creation failed: {str(e)}")
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except OSError:
+                logger.warning("Failed to remove temp file: %s", temp_file_path)
 
 @app.get("/api/health")
 async def health_check():

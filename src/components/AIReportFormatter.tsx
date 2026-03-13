@@ -3,10 +3,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { Upload, FileText, Download, Eye, Sparkles, Plus, Minus, CheckCircle } from "lucide-react"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { useAuth } from "@/contexts/AuthContext"
 
 interface TeamMember {
   name: string
@@ -31,13 +30,26 @@ interface ProcessingStatus {
   message: string
 }
 
+interface BackendResult {
+  chapters: Chapter[]
+  files?: { [filename: string]: string }
+  mergedPdfBase64?: string | null
+  mergedPdfName?: string | null
+  wordFileBase64?: string | null
+  wordFileName?: string | null
+}
+
 export function AIReportFormatter() {
+  const { user } = useAuth()
   const [sourceDocument, setSourceDocument] = useState<File | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
   const [processingStatus, setProcessingStatus] = useState<ProcessingStatus>({ stage: '', progress: 0, message: '' })
   const [extractedChapters, setExtractedChapters] = useState<Chapter[]>([])
-  const [generatedFiles, setGeneratedFiles] = useState<{ [filename: string]: string }>({})
-  const [mainLatexFile, setMainLatexFile] = useState("")
+  const [previewPdfUrl, setPreviewPdfUrl] = useState<string | null>(null)
+  const [previewPdfName, setPreviewPdfName] = useState<string | null>(null)
+  const [previewPdfBase64, setPreviewPdfBase64] = useState<string | null>(null)
+  const [wordDownloadName, setWordDownloadName] = useState<string | null>(null)
+  const [wordDownloadBase64, setWordDownloadBase64] = useState<string | null>(null)
   
   // Team and project details
   const [numTeamMembers, setNumTeamMembers] = useState<number>(1)
@@ -73,7 +85,7 @@ export function AIReportFormatter() {
     setProcessingStatus({ stage, progress, message })
   }
 
-  const processDocumentWithBackend = async (file: File, projectDetails: { title: string, guide: string, year: string, teamMembers: TeamMember[] }): Promise<{ chapters: Chapter[], files: { [filename: string]: string } }> => {
+  const processDocumentWithBackend = async (file: File, projectDetails: { title: string, guide: string, year: string, teamMembers: TeamMember[] }): Promise<BackendResult> => {
     try {
       updateProcessingStatus('uploading', 25, 'Uploading document to backend...')
       
@@ -83,6 +95,9 @@ export function AIReportFormatter() {
       formData.append('project_title', projectDetails.title)
       formData.append('guide_name', projectDetails.guide)
       formData.append('year', projectDetails.year)
+      if (user?.departmentId) {
+        formData.append('dept', user.departmentId)
+      }
       formData.append('team_members_json', JSON.stringify(projectDetails.teamMembers))
       
       console.log('Sending request to backend with:', {
@@ -138,7 +153,11 @@ export function AIReportFormatter() {
       
       return {
         chapters,
-        files: result.files
+        files: result.files,
+        mergedPdfBase64: result.merged_pdf_base64,
+        mergedPdfName: result.merged_pdf_name,
+        wordFileBase64: result.word_file_base64,
+        wordFileName: result.word_file_name
       }
       
     } catch (error) {
@@ -171,11 +190,22 @@ export function AIReportFormatter() {
       }
       
       // Process with backend
-      const { chapters, files } = await processDocumentWithBackend(sourceDocument, projectDetails)
+      const { chapters, mergedPdfBase64, mergedPdfName, wordFileBase64, wordFileName } = await processDocumentWithBackend(sourceDocument, projectDetails)
       
       setExtractedChapters(chapters)
-      setMainLatexFile(files['report.tex'] || '')
-      setGeneratedFiles(files)
+
+      if (mergedPdfBase64) {
+        const pdfBlob = base64ToBlob(mergedPdfBase64, 'application/pdf')
+        const pdfUrl = URL.createObjectURL(pdfBlob)
+        setPreviewPdfUrl(pdfUrl)
+        setPreviewPdfName(mergedPdfName || 'report.pdf')
+        setPreviewPdfBase64(mergedPdfBase64)
+      }
+
+      if (wordFileBase64) {
+        setWordDownloadBase64(wordFileBase64)
+        setWordDownloadName(wordFileName || 'report.docx')
+      }
       
       updateProcessingStatus('complete', 100, `Successfully processed ${chapters.length} chapters`)
       
@@ -187,17 +217,18 @@ export function AIReportFormatter() {
     }
   }
 
-  const readFileAsText = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = (e) => resolve(e.target?.result as string)
-      reader.onerror = (e) => reject(new Error('Failed to read file'))
-      reader.readAsText(file)
-    })
+  const base64ToBlob = (base64: string, mimeType: string) => {
+    const byteCharacters = atob(base64)
+    const byteNumbers = new Array(byteCharacters.length)
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i)
+    }
+    const byteArray = new Uint8Array(byteNumbers)
+    return new Blob([byteArray], { type: mimeType })
   }
 
-  const downloadFile = (filename: string, content: string) => {
-    const blob = new Blob([content], { type: 'text/plain' })
+  const downloadBase64File = (filename: string, base64: string, mimeType: string) => {
+    const blob = base64ToBlob(base64, mimeType)
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -208,13 +239,11 @@ export function AIReportFormatter() {
     URL.revokeObjectURL(url)
   }
 
-  const downloadAllFiles = () => {
-    Object.entries(generatedFiles).forEach(([filename, content]) => {
-      setTimeout(() => downloadFile(filename, content), 100)
-    })
+  const getWordMimeType = (filename: string) => {
+    return filename.toLowerCase().endsWith('.doc')
+      ? 'application/msword'
+      : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
   }
-
-
 
   return (
     <div className="h-full bg-background">
@@ -447,133 +476,64 @@ export function AIReportFormatter() {
               <CardTitle className="text-lg flex items-center justify-between">
                 <div className="flex items-center">
                   <Eye className="mr-2 h-5 w-5" />
-                  Generated Files
+                  Report Preview
                 </div>
-                <Button 
-                  size="sm" 
-                  variant="outline" 
-                  onClick={downloadAllFiles}
-                  disabled={Object.keys(generatedFiles).length === 0}
-                >
-                  <Download className="mr-2 h-4 w-4" />
-                  Download All
-                </Button>
+                <div className="flex items-center gap-2">
+                  {previewPdfBase64 && previewPdfName && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => downloadBase64File(previewPdfName, previewPdfBase64, 'application/pdf')}
+                    >
+                      <Download className="mr-2 h-4 w-4" />
+                      Download PDF
+                    </Button>
+                  )}
+                  {wordDownloadBase64 && wordDownloadName && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => downloadBase64File(wordDownloadName, wordDownloadBase64, getWordMimeType(wordDownloadName))}
+                    >
+                      <Download className="mr-2 h-4 w-4" />
+                      Download Word
+                    </Button>
+                  )}
+                </div>
               </CardTitle>
               <CardDescription>
-                Generated LaTeX project files
+                Preview the generated PDF and download outputs
               </CardDescription>
             </CardHeader>
             <CardContent className="h-full overflow-hidden">
-              {Object.keys(generatedFiles).length > 0 ? (
-                <Tabs defaultValue="report.tex" className="h-full">
-                  <TabsList className="grid w-full grid-cols-3">
-                    <TabsTrigger value="report.tex">Main File</TabsTrigger>
-                    <TabsTrigger value="chapters">Chapters</TabsTrigger>
-                    <TabsTrigger value="summary">Summary</TabsTrigger>
-                  </TabsList>
-                  
-                  <TabsContent value="report.tex" className="h-full overflow-y-auto mt-4">
-                    <div className="space-y-2 mb-4">
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-medium">report.tex</span>
-                        <Button 
-                          size="sm" 
-                          variant="outline"
-                          onClick={() => downloadFile('report.tex', mainLatexFile)}
-                        >
-                          <Download className="h-3 w-3 mr-1" />
-                          Download
-                        </Button>
+              {previewPdfUrl ? (
+                <div className="h-full flex flex-col gap-4">
+                  <div className="flex-1 border rounded-lg overflow-hidden">
+                    <iframe
+                      title="Report Preview"
+                      src={previewPdfUrl}
+                      className="w-full h-full"
+                    />
+                  </div>
+                  {processingStatus.stage === 'complete' && (
+                    <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
+                      <div className="flex items-center">
+                        <CheckCircle className="h-5 w-5 text-green-600 mr-2" />
+                        <span className="text-green-800 font-medium">Processing Complete!</span>
                       </div>
+                      <p className="text-sm text-green-700 mt-1">
+                        Your report PDF is ready for preview and download.
+                      </p>
                     </div>
-                    <pre className="text-xs bg-muted p-4 rounded-lg overflow-auto">
-                      <code className="whitespace-pre-wrap">
-                        {mainLatexFile}
-                      </code>
-                    </pre>
-                  </TabsContent>
-                  
-                  <TabsContent value="chapters" className="h-full overflow-y-auto mt-4">
-                    <div className="space-y-4">
-                      {Object.entries(generatedFiles)
-                        .filter(([filename]) => filename.startsWith('chapter'))
-                        .map(([filename, content]) => (
-                          <div key={filename} className="border rounded-lg p-4">
-                            <div className="flex items-center justify-between mb-2">
-                              <span className="text-sm font-medium">{filename}</span>
-                              <Button 
-                                size="sm" 
-                                variant="outline"
-                                onClick={() => downloadFile(filename, content)}
-                              >
-                                <Download className="h-3 w-3 mr-1" />
-                                Download
-                              </Button>
-                            </div>
-                            <pre className="text-xs bg-muted p-2 rounded overflow-auto max-h-40">
-                              <code className="whitespace-pre-wrap">
-                                {content.substring(0, 500)}...
-                              </code>
-                            </pre>
-                          </div>
-                        ))}
-                    </div>
-                  </TabsContent>
-                  
-                  <TabsContent value="summary" className="h-full overflow-y-auto mt-4">
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="text-center p-4 bg-blue-50 rounded-lg">
-                          <div className="text-2xl font-bold text-blue-600">
-                            {extractedChapters.length}
-                          </div>
-                          <div className="text-sm text-blue-800">Chapters</div>
-                        </div>
-                        <div className="text-center p-4 bg-green-50 rounded-lg">
-                          <div className="text-2xl font-bold text-green-600">
-                            {Object.keys(generatedFiles).length}
-                          </div>
-                          <div className="text-sm text-green-800">Files Generated</div>
-                        </div>
-                      </div>
-                      
-                      <div className="space-y-2">
-                        <h4 className="font-medium">Generated Files:</h4>
-                        {Object.keys(generatedFiles).map((filename) => (
-                          <div key={filename} className="flex items-center justify-between p-2 bg-gray-50 rounded">
-                            <span className="text-sm">{filename}</span>
-                            <Button 
-                              size="sm" 
-                              variant="outline"
-                              onClick={() => downloadFile(filename, generatedFiles[filename])}
-                            >
-                              <Download className="h-3 w-3" />
-                            </Button>
-                          </div>
-                        ))}
-                      </div>
-                      
-                      {processingStatus.stage === 'complete' && (
-                        <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
-                          <div className="flex items-center">
-                            <CheckCircle className="h-5 w-5 text-green-600 mr-2" />
-                            <span className="text-green-800 font-medium">Processing Complete!</span>
-                          </div>
-                          <p className="text-sm text-green-700 mt-1">
-                            Your LaTeX project is ready. Download all files and compile with your LaTeX editor.
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  </TabsContent>
-                </Tabs>
+                  )}
+                </div>
               ) : (
                 <div className="flex items-center justify-center h-full">
                   <div className="text-center">
                     <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
                     <h3 className="text-lg font-medium mb-2">No Files Generated</h3>
                     <p className="text-muted-foreground">
-                      Upload your source document and template, then click "Process Document with AI"
+                      Upload your source document, then click "Process Document with AI"
                     </p>
                   </div>
                 </div>

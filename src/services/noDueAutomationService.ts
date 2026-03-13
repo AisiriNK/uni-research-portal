@@ -35,6 +35,7 @@ import {
   CommonClearanceMapping,
   NoDueRequest,
   NoDueRequestWithDetails,
+  NoDueStatus,
   calculateSemester,
   generateNoDueRequestId,
 } from '@/types/schema';
@@ -57,6 +58,18 @@ const COLLECTIONS = {
 
 // Fixed common clearance IDs (must match common_clearance_types collection)
 const COMMON_CLEARANCES = ['library', 'fees', 'sports', 'certificate'] as const;
+
+const APPROVED_STATUSES: NoDueStatus[] = ['approved', 'mentor_approved', 'completed'];
+
+export interface MentorStudentSummary {
+  student: Pick<Student, 'usn' | 'name' | 'departmentId' | 'section' | 'batchYear'> & {
+    semesterNumber?: number | null;
+  };
+  requests: NoDueRequestWithDetails[];
+  mentorRequest?: NoDueRequestWithDetails;
+  readyForMentorApproval: boolean;
+  pendingCategories: Array<{ referenceId: string; referenceType: string; status: NoDueStatus }>;
+}
 
 // ============================================================================
 // ACADEMIC CONTEXT
@@ -485,6 +498,51 @@ export async function getStudentNoDueRequests(usn: string): Promise<NoDueRequest
   }
   
   return requests;
+}
+
+export async function getMentorStudentSummaries(employeeId: string): Promise<MentorStudentSummary[]> {
+  const studentsQuery = query(
+    collection(db, COLLECTIONS.STUDENTS),
+    where('mentorEmployeeId', '==', employeeId)
+  );
+  const studentsSnap = await getDocs(studentsQuery);
+  const summaries: MentorStudentSummary[] = [];
+
+  for (const studentDoc of studentsSnap.docs) {
+    const student = studentDoc.data() as Student;
+    const requests = await getStudentNoDueRequests(student.usn);
+    const mentorRequest = requests.find((request) => request.referenceType === 'mentor');
+    const nonMentorRequests = requests.filter((request) => request.referenceType !== 'mentor');
+    const pendingCategories = nonMentorRequests
+      .filter((request) => !APPROVED_STATUSES.includes(request.status))
+      .map((request) => ({
+        referenceId: request.referenceId,
+        referenceType: request.referenceType,
+        status: request.status,
+      }));
+
+    const readyForMentorApproval =
+      nonMentorRequests.length > 0 &&
+      pendingCategories.length === 0 &&
+      mentorRequest?.status === 'pending_mentor_approval';
+
+    summaries.push({
+      student: {
+        usn: student.usn,
+        name: student.name,
+        departmentId: student.departmentId,
+        section: student.section,
+        batchYear: student.batchYear,
+        semesterNumber: requests[0]?.semesterNumber ?? null,
+      },
+      requests,
+      mentorRequest,
+      readyForMentorApproval,
+      pendingCategories,
+    });
+  }
+
+  return summaries.sort((a, b) => a.student.usn.localeCompare(b.student.usn));
 }
 
 /**

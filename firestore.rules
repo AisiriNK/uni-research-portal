@@ -256,6 +256,9 @@ service cloud.firestore {
         docId.matches('^ND_' + getProfileId() + '_.*') ||  // Student's own request (legacy pattern)
         resource.data.usn == getProfileId() ||             // Student owns the document (canonical check)
         resource.data.teacherEmployeeId == getProfileId() ||  // Teacher's assigned request
+        (isTeacher() &&
+          get(/databases/$(database)/documents/students/$(resource.data.usn)).data.mentorEmployeeId == getProfileId()
+        ) ||  // Mentor can read requests for their assigned students
         isAdminUser()  // Admin can see all
       );
       

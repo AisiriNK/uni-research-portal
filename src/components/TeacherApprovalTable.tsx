@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -7,13 +7,17 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Loader2, CheckCircle, XCircle, Clock } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import {
   getTeacherNoDueRequests,
   approveNoDueRequest,
   rejectNoDueRequest,
+  getMentorStudentSummaries,
+  getStudentNoDueRequests,
 } from '@/services/noDueAutomationService';
+import type { MentorStudentSummary } from '@/services/noDueAutomationService';
 import { NoDueRequestWithDetails, generateNoDueRequestId } from '@/types/schema';
 import { format } from 'date-fns';
 
@@ -25,10 +29,21 @@ export function TeacherApprovalTable() {
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
   const [rejectionReason, setRejectionReason] = useState('');
   const [processing, setProcessing] = useState(false);
+  const [mentorSummaries, setMentorSummaries] = useState<MentorStudentSummary[]>([]);
+  const [mentorLoading, setMentorLoading] = useState(true);
+  const [mentorError, setMentorError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'teacher' | 'mentor'>('teacher');
+  const [mentorRequestDetails, setMentorRequestDetails] = useState<Record<string, NoDueRequestWithDetails[] | null>>({});
 
   useEffect(() => {
     if (userProfile) {
       loadApprovals();
+    }
+  }, [userProfile]);
+
+  useEffect(() => {
+    if (userProfile) {
+      loadMentorSummaries();
     }
   }, [userProfile]);
 
@@ -72,6 +87,49 @@ export function TeacherApprovalTable() {
     }
   };
 
+  const loadMentorSummaries = async () => {
+    if (!userProfile) {
+      return;
+    }
+
+    if (userProfile.role !== 'teacher') {
+      setMentorSummaries([]);
+      setMentorLoading(false);
+      return;
+    }
+
+    const teacherIdentifier = userProfile.employeeId || userProfile.empId;
+
+    if (!teacherIdentifier) {
+      setMentorError('Profile missing employee ID. Update the teacher record to review mentor requests.');
+      setMentorSummaries([]);
+      setMentorLoading(false);
+      return;
+    }
+
+    try {
+      setMentorLoading(true);
+      setMentorError(null);
+      const data = await getMentorStudentSummaries(teacherIdentifier);
+      setMentorSummaries(data);
+    } catch (error) {
+      console.error('Error loading mentor requests:', error);
+      const isPermissionDenied =
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === 'permission-denied';
+      if (isPermissionDenied) {
+        setMentorSummaries([]);
+        setMentorError(null);
+        return;
+      }
+      setMentorError('Failed to load mentor requests. Please try again.');
+    } finally {
+      setMentorLoading(false);
+    }
+  };
+
   const handleApprove = async (approval: NoDueRequestWithDetails) => {
     try {
       setProcessing(true);
@@ -83,7 +141,8 @@ export function TeacherApprovalTable() {
         description: `Cleared ${approval.studentName}'s ${formatCategoryLabel(approval)}`,
       });
 
-      loadApprovals();
+      await loadApprovals();
+      await loadMentorSummaries();
     } catch (error) {
       toast({
         title: 'Error',
@@ -122,7 +181,8 @@ export function TeacherApprovalTable() {
       });
 
       setRejectDialogOpen(false);
-      loadApprovals();
+      await loadApprovals();
+      await loadMentorSummaries();
     } catch (error) {
       toast({
         title: 'Error',
@@ -181,175 +241,536 @@ export function TeacherApprovalTable() {
     }
   };
 
-  const pendingApprovals = approvals.filter(a => a.status === 'pending');
-  const processedApprovals = approvals.filter(a => a.status !== 'pending');
-  const approvedCount = approvals.filter((a) => ['approved', 'mentor_approved', 'completed'].includes(a.status)).length;
-  const rejectedCount = approvals.filter((a) => ['rejected', 'mentor_rejected'].includes(a.status)).length;
+  const teacherApprovals = approvals.filter((approval) => approval.referenceType !== 'mentor');
+  const mentorApprovals = approvals.filter((approval) => approval.referenceType === 'mentor');
+  const pendingApprovals = teacherApprovals.filter((approval) => approval.status === 'pending');
+  const processedApprovals = teacherApprovals.filter((approval) => approval.status !== 'pending');
+  const mentorPendingApprovals = mentorApprovals.filter((approval) =>
+    ['pending', 'pending_mentor_approval'].includes(approval.status)
+  );
+  const mentorProcessedApprovals = mentorApprovals.filter((approval) =>
+    !['pending', 'pending_mentor_approval'].includes(approval.status)
+  );
+  const approvedCount = teacherApprovals.filter((approval) =>
+    ['approved', 'mentor_approved', 'completed'].includes(approval.status)
+  ).length;
+  const rejectedCount = teacherApprovals.filter((approval) =>
+    ['rejected', 'mentor_rejected'].includes(approval.status)
+  ).length;
+  const mentorSummaryByUsn = useMemo(
+    () => new Map(mentorSummaries.map((summary) => [summary.student.usn, summary])),
+    [mentorSummaries]
+  );
 
-  if (loading) {
-    return (
-      <Card>
-        <CardContent className="flex items-center justify-center py-12">
-          <Loader2 className="h-8 w-8 animate-spin text-primary" />
-        </CardContent>
-      </Card>
+  useEffect(() => {
+    if (!userProfile || userProfile.role !== 'teacher') {
+      return;
+    }
+
+    const mentorUsns = Array.from(new Set(mentorApprovals.map((approval) => approval.usn)));
+    if (mentorUsns.length === 0) {
+      return;
+    }
+
+    const missingUsns = mentorUsns.filter(
+      (usn) => !mentorSummaryByUsn.has(usn) && !(usn in mentorRequestDetails)
     );
-  }
 
-  return (
-    <>
-      <div className="space-y-6">
-        {/* Stats */}
-        <div className="grid grid-cols-3 gap-4">
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-center">
-                <p className="text-2xl font-bold text-yellow-600">{pendingApprovals.length}</p>
-                <p className="text-sm text-muted-foreground">Pending</p>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-center">
-                <p className="text-2xl font-bold text-green-600">{approvedCount}</p>
-                <p className="text-sm text-muted-foreground">Approved</p>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-center">
-                <p className="text-2xl font-bold text-red-600">{rejectedCount}</p>
-                <p className="text-sm text-muted-foreground">Rejected</p>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+    if (missingUsns.length === 0) {
+      return;
+    }
 
-        {/* Pending Requests */}
+    let cancelled = false;
+
+    const loadMissingSummaries = async () => {
+      const results = await Promise.all(
+        missingUsns.map(async (usn) => {
+          try {
+            const requests = await getStudentNoDueRequests(usn);
+            return { usn, requests };
+          } catch (error) {
+            console.error('Failed to load student no-due requests', { usn, error });
+            return { usn, requests: null };
+          }
+        })
+      );
+
+      if (cancelled) {
+        return;
+      }
+
+      setMentorRequestDetails((prev) => {
+        const next = { ...prev };
+        results.forEach(({ usn, requests }) => {
+          next[usn] = requests;
+        });
+        return next;
+      });
+    };
+
+    loadMissingSummaries();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mentorApprovals, mentorSummaries, mentorRequestDetails, userProfile]);
+
+  const teacherContent = loading ? (
+    <Card>
+      <CardContent className="flex items-center justify-center py-12">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </CardContent>
+    </Card>
+  ) : (
+    <div className="space-y-6">
+      <div className="grid grid-cols-3 gap-4">
         <Card>
-          <CardHeader>
-            <CardTitle>Pending Approval Requests ({pendingApprovals.length})</CardTitle>
-            <CardDescription>Review and approve/reject no-due clearance requests</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {pendingApprovals.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                <Clock className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                <p>No pending requests</p>
-              </div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Student</TableHead>
-                    <TableHead>USN</TableHead>
-                    <TableHead>Category</TableHead>
-                    <TableHead>Section</TableHead>
-                    <TableHead>Requested</TableHead>
-                    <TableHead>Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {pendingApprovals.map((approval) => {
-                    const rowKey = generateNoDueRequestId(approval.usn, approval.referenceId);
-                    return (
-                      <TableRow key={rowKey}>
-                        <TableCell className="font-medium">
-                          {approval.studentName}
-                          <div className="text-xs text-muted-foreground">
-                            {approval.departmentId} • Sem {approval.semesterNumber}
-                          </div>
-                        </TableCell>
-                        <TableCell>{approval.usn}</TableCell>
-                        <TableCell>
-                          <Badge variant="outline">{formatCategoryLabel(approval)}</Badge>
-                        </TableCell>
-                        <TableCell>{approval.section || '-'}</TableCell>
-                        <TableCell className="text-xs">
-                          {format(approval.requestedAt.toDate(), 'MMM dd, yyyy')}
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            <Button
-                              size="sm"
-                              onClick={() => handleApprove(approval)}
-                              disabled={processing}
-                              className="bg-green-600 hover:bg-green-700"
-                            >
-                              <CheckCircle className="mr-1 h-3 w-3" />
-                              Approve
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleRejectClick(approval)}
-                              disabled={processing}
-                              className="text-red-600 hover:text-red-700"
-                            >
-                              <XCircle className="mr-1 h-3 w-3" />
-                              Reject
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            )}
+          <CardContent className="p-4">
+            <div className="text-center">
+              <p className="text-2xl font-bold text-yellow-600">{pendingApprovals.length}</p>
+              <p className="text-sm text-muted-foreground">Pending</p>
+            </div>
           </CardContent>
         </Card>
-
-        {/* Processed Requests */}
         <Card>
-          <CardHeader>
-            <CardTitle>Processed Requests ({processedApprovals.length})</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {processedApprovals.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                <p>No processed requests</p>
-              </div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Student</TableHead>
-                    <TableHead>USN</TableHead>
-                    <TableHead>Category</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Updated</TableHead>
-                    <TableHead>Notes</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {processedApprovals.map((approval) => {
-                    const rowKey = generateNoDueRequestId(approval.usn, approval.referenceId);
-                    return (
-                      <TableRow key={rowKey}>
-                        <TableCell className="font-medium">{approval.studentName}</TableCell>
-                        <TableCell>{approval.usn}</TableCell>
-                        <TableCell>{formatCategoryLabel(approval)}</TableCell>
-                        <TableCell>{getStatusBadge(approval.status)}</TableCell>
-                        <TableCell className="text-xs">
-                          {approval.approvedAt ? format(approval.approvedAt.toDate(), 'MMM dd, yyyy') : '-'}
-                        </TableCell>
-                        <TableCell className="max-w-xs truncate">
-                          {approval.rejectionReason || '-'}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            )}
+          <CardContent className="p-4">
+            <div className="text-center">
+              <p className="text-2xl font-bold text-green-600">{approvedCount}</p>
+              <p className="text-sm text-muted-foreground">Approved</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="text-center">
+              <p className="text-2xl font-bold text-red-600">{rejectedCount}</p>
+              <p className="text-sm text-muted-foreground">Rejected</p>
+            </div>
           </CardContent>
         </Card>
       </div>
 
-      {/* Reject Dialog */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Pending Approval Requests ({pendingApprovals.length})</CardTitle>
+          <CardDescription>Review and approve/reject no-due clearance requests</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {pendingApprovals.length === 0 ? (
+            <div className="text-center py-8 text-muted-foreground">
+              <Clock className="h-12 w-12 mx-auto mb-4 opacity-50" />
+              <p>No pending requests</p>
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Student</TableHead>
+                  <TableHead>USN</TableHead>
+                  <TableHead>Category</TableHead>
+                  <TableHead>Section</TableHead>
+                  <TableHead>Requested</TableHead>
+                  <TableHead>Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {pendingApprovals.map((approval) => {
+                  const rowKey = generateNoDueRequestId(approval.usn, approval.referenceId);
+                  return (
+                    <TableRow key={rowKey}>
+                      <TableCell className="font-medium">
+                        {approval.studentName}
+                        <div className="text-xs text-muted-foreground">
+                          {approval.departmentId} • Sem {approval.semesterNumber}
+                        </div>
+                      </TableCell>
+                      <TableCell>{approval.usn}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{formatCategoryLabel(approval)}</Badge>
+                      </TableCell>
+                      <TableCell>{approval.section || '-'}</TableCell>
+                      <TableCell className="text-xs">
+                        {format(approval.requestedAt.toDate(), 'MMM dd, yyyy')}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            onClick={() => handleApprove(approval)}
+                            disabled={processing}
+                            className="bg-green-600 hover:bg-green-700"
+                          >
+                            <CheckCircle className="mr-1 h-3 w-3" />
+                            Approve
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleRejectClick(approval)}
+                            disabled={processing}
+                            className="text-red-600 hover:text-red-700"
+                          >
+                            <XCircle className="mr-1 h-3 w-3" />
+                            Reject
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Processed Requests ({processedApprovals.length})</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {processedApprovals.length === 0 ? (
+            <div className="text-center py-8 text-muted-foreground">
+              <p>No processed requests</p>
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Student</TableHead>
+                  <TableHead>USN</TableHead>
+                  <TableHead>Category</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Updated</TableHead>
+                  <TableHead>Notes</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {processedApprovals.map((approval) => {
+                  const rowKey = generateNoDueRequestId(approval.usn, approval.referenceId);
+                  return (
+                    <TableRow key={rowKey}>
+                      <TableCell className="font-medium">{approval.studentName}</TableCell>
+                      <TableCell>{approval.usn}</TableCell>
+                      <TableCell>{formatCategoryLabel(approval)}</TableCell>
+                      <TableCell>{getStatusBadge(approval.status)}</TableCell>
+                      <TableCell className="text-xs">
+                        {approval.approvedAt ? format(approval.approvedAt.toDate(), 'MMM dd, yyyy') : '-'}
+                      </TableCell>
+                      <TableCell className="max-w-xs truncate">
+                        {approval.rejectionReason || '-'}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+
+  const mentorContent = (() => {
+    if (!userProfile || userProfile.role !== 'teacher') {
+      return (
+        <Card>
+          <CardContent className="py-12 text-center text-muted-foreground">
+            Mentor review is only available to teacher accounts.
+          </CardContent>
+        </Card>
+      );
+    }
+
+    if (mentorLoading) {
+      return (
+        <Card>
+          <CardContent className="flex items-center justify-center py-12">
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          </CardContent>
+        </Card>
+      );
+    }
+
+    if (mentorError) {
+      return (
+        <Card>
+          <CardContent className="flex flex-col gap-3 py-6 text-center">
+            <p className="text-sm text-red-600">{mentorError}</p>
+            <Button variant="outline" size="sm" onClick={loadMentorSummaries}>
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
+      );
+    }
+
+    if (mentorSummaries.length === 0 && mentorApprovals.length === 0) {
+      return (
+        <Card>
+          <CardContent className="py-12 text-center text-muted-foreground">
+            No students mapped to you as mentor or no requests have been generated yet.
+          </CardContent>
+        </Card>
+      );
+    }
+
+    return (
+      <div className="space-y-6">
+        {mentorApprovals.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Mentor Clearance Requests ({mentorApprovals.length})</CardTitle>
+              <CardDescription>Review mentor clearance items assigned to you</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div>
+                <h4 className="mb-3 text-sm font-semibold text-muted-foreground">
+                  Pending ({mentorPendingApprovals.length})
+                </h4>
+                {mentorPendingApprovals.length === 0 ? (
+                  <div className="text-sm text-muted-foreground">No pending mentor requests.</div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Student</TableHead>
+                        <TableHead>USN</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>All Requests</TableHead>
+                        <TableHead>Requested</TableHead>
+                        <TableHead>Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {mentorPendingApprovals.map((approval) => {
+                        const rowKey = generateNoDueRequestId(approval.usn, approval.referenceId);
+                        const canAct = approval.status === 'pending_mentor_approval' && !processing;
+                        const summary = mentorSummaryByUsn.get(approval.usn);
+                        const summaryRequests = summary?.requests ?? mentorRequestDetails[approval.usn] ?? undefined;
+                        const totalRequests = summaryRequests?.length ?? 0;
+                        const approvedRequests = summaryRequests?.filter((request) =>
+                          ['approved', 'mentor_approved', 'completed'].includes(request.status)
+                        ).length ?? 0;
+                        const pendingRequests = summaryRequests?.filter((request) =>
+                          !['approved', 'mentor_approved', 'completed', 'rejected', 'mentor_rejected'].includes(request.status)
+                        ).length ?? 0;
+                        const rejectedRequests = summaryRequests?.filter((request) =>
+                          ['rejected', 'mentor_rejected'].includes(request.status)
+                        ).length ?? 0;
+                        return (
+                          <TableRow key={rowKey}>
+                            <TableCell className="font-medium">{approval.studentName}</TableCell>
+                            <TableCell>{approval.usn}</TableCell>
+                            <TableCell>{getStatusBadge(approval.status)}</TableCell>
+                            <TableCell className="text-xs">
+                              {summaryRequests ? (
+                                <div className="space-y-1">
+                                  <div>{approvedRequests} approved • {pendingRequests} pending • {rejectedRequests} rejected</div>
+                                  <div className="text-muted-foreground">{totalRequests} total requests</div>
+                                </div>
+                              ) : (
+                                <span className="text-muted-foreground">Summary unavailable</span>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              {format(approval.requestedAt.toDate(), 'MMM dd, yyyy')}
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex flex-col gap-2">
+                                <div className="flex items-center gap-2">
+                                <Button
+                                  size="sm"
+                                  onClick={() => handleApprove(approval)}
+                                  disabled={!canAct}
+                                  className="bg-green-600 hover:bg-green-700"
+                                >
+                                  <CheckCircle className="mr-1 h-3 w-3" />
+                                  Approve
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => handleRejectClick(approval)}
+                                  disabled={!canAct}
+                                  className="text-red-600 hover:text-red-700"
+                                >
+                                  <XCircle className="mr-1 h-3 w-3" />
+                                  Reject
+                                </Button>
+                                </div>
+                                {!canAct && (
+                                  <span className="text-xs text-muted-foreground">
+                                    Waiting for all teacher approvals before mentor action.
+                                  </span>
+                                )}
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                )}
+              </div>
+
+              <div>
+                <h4 className="mb-3 text-sm font-semibold text-muted-foreground">
+                  Processed ({mentorProcessedApprovals.length})
+                </h4>
+                {mentorProcessedApprovals.length === 0 ? (
+                  <div className="text-sm text-muted-foreground">No processed mentor requests.</div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Student</TableHead>
+                        <TableHead>USN</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Updated</TableHead>
+                        <TableHead>Notes</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {mentorProcessedApprovals.map((approval) => {
+                        const rowKey = generateNoDueRequestId(approval.usn, approval.referenceId);
+                        return (
+                          <TableRow key={rowKey}>
+                            <TableCell className="font-medium">{approval.studentName}</TableCell>
+                            <TableCell>{approval.usn}</TableCell>
+                            <TableCell>{getStatusBadge(approval.status)}</TableCell>
+                            <TableCell className="text-xs">
+                              {approval.approvedAt ? format(approval.approvedAt.toDate(), 'MMM dd, yyyy') : '-'}
+                            </TableCell>
+                            <TableCell className="max-w-xs truncate">
+                              {approval.rejectionReason || '-'}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {mentorSummaries.map((summary) => {
+          const mentorRequest = summary.mentorRequest;
+          const canAct =
+            summary.readyForMentorApproval &&
+            mentorRequest?.status === 'pending_mentor_approval' &&
+            !processing;
+          const cardKey = summary.student.usn;
+
+          return (
+            <Card key={cardKey} className="shadow-sm">
+              <CardHeader className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <CardTitle>{summary.student.name}</CardTitle>
+                  <CardDescription>
+                    {summary.student.usn} • {summary.student.departmentId} • Section {summary.student.section} •
+                    Sem {summary.student.semesterNumber ?? '—'}
+                  </CardDescription>
+                </div>
+                <div className="flex flex-col gap-2 md:items-end">
+                  <Badge className={summary.readyForMentorApproval ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}>
+                    {summary.readyForMentorApproval ? 'Ready for mentor approval' : 'Waiting for teachers'}
+                  </Badge>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => mentorRequest && handleApprove(mentorRequest)}
+                      disabled={!canAct || !mentorRequest}
+                      className="bg-green-600 hover:bg-green-700"
+                    >
+                      <CheckCircle className="mr-1 h-3 w-3" />
+                      Approve
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => mentorRequest && handleRejectClick(mentorRequest)}
+                      disabled={!canAct || !mentorRequest}
+                      className="text-red-600 hover:text-red-700"
+                    >
+                      <XCircle className="mr-1 h-3 w-3" />
+                      Reject
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {summary.requests.length === 0 ? (
+                  <div className="text-sm text-muted-foreground">No no-due requests generated for this student.</div>
+                ) : (
+                  <div className="overflow-x-auto rounded-md border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Category</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Teacher</TableHead>
+                          <TableHead>Updated</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {summary.requests.map((request) => {
+                          const rowKey = generateNoDueRequestId(request.usn, request.referenceId);
+                          return (
+                            <TableRow key={rowKey}>
+                              <TableCell>{formatCategoryLabel(request)}</TableCell>
+                              <TableCell>{getStatusBadge(request.status)}</TableCell>
+                              <TableCell>
+                                <span className="font-medium">{request.teacherName}</span>
+                                <span className="ml-2 text-xs text-muted-foreground">{request.teacherEmployeeId}</span>
+                              </TableCell>
+                              <TableCell className="text-xs">
+                                {request.approvedAt ? format(request.approvedAt.toDate(), 'MMM dd, yyyy') : '-'}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+
+                {summary.pendingCategories.length > 0 && (
+                  <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                    <p className="font-semibold">Pending clearances</p>
+                    <ul className="mt-1 list-disc pl-5">
+                      {summary.pendingCategories.map((pending) => (
+                        <li key={`${summary.student.usn}_${pending.referenceId}`}>
+                          {pending.referenceType === 'core_subject' && 'Core • '}
+                          {pending.referenceType === 'open_elective' && 'Open Elective • '}
+                          {pending.referenceType === 'common_clearance' && 'Common • '}
+                          {pending.referenceType === 'mentor' ? 'Mentor Clearance' : pending.referenceId} — {pending.status}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+    );
+  })();
+
+  return (
+    <>
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'teacher' | 'mentor')} className="space-y-6">
+        <TabsList className="grid w-full grid-cols-2 md:w-auto">
+          <TabsTrigger value="teacher">My Requests</TabsTrigger>
+          <TabsTrigger value="mentor">Mentor Requests</TabsTrigger>
+        </TabsList>
+        <TabsContent value="teacher">{teacherContent}</TabsContent>
+        <TabsContent value="mentor">{mentorContent}</TabsContent>
+      </Tabs>
+
       <Dialog open={rejectDialogOpen} onOpenChange={setRejectDialogOpen}>
         <DialogContent>
           <DialogHeader>
