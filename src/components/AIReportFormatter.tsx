@@ -1,11 +1,14 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Upload, FileText, Download, Eye, Sparkles, Plus, Minus, CheckCircle } from "lucide-react"
 import { useAuth } from "@/contexts/AuthContext"
+import { collection, getDocs } from "firebase/firestore"
+import { db } from "@/config/firebase"
 
 interface TeamMember {
   name: string
@@ -30,6 +33,13 @@ interface ProcessingStatus {
   message: string
 }
 
+interface TeacherOption {
+  id: string
+  name: string
+  designation: string
+  departmentId: string
+}
+
 interface BackendResult {
   chapters: Chapter[]
   files?: { [filename: string]: string }
@@ -50,6 +60,12 @@ export function AIReportFormatter() {
   const [previewPdfBase64, setPreviewPdfBase64] = useState<string | null>(null)
   const [wordDownloadName, setWordDownloadName] = useState<string | null>(null)
   const [wordDownloadBase64, setWordDownloadBase64] = useState<string | null>(null)
+  const [teachers, setTeachers] = useState<TeacherOption[]>([])
+  const [teachersLoading, setTeachersLoading] = useState(false)
+  const [selectedTeacherDesignation, setSelectedTeacherDesignation] = useState("")
+  const [hodName, setHodName] = useState("")
+  const [hodDesignation, setHodDesignation] = useState("")
+  const [selectedTeacherId, setSelectedTeacherId] = useState("")
   
   // Team and project details
   const [numTeamMembers, setNumTeamMembers] = useState<number>(1)
@@ -57,6 +73,48 @@ export function AIReportFormatter() {
   const [guideName, setGuideName] = useState("")
   const [year, setYear] = useState("")
   const [projectTitle, setProjectTitle] = useState("")
+
+  useEffect(() => {
+    const loadTeachers = async () => {
+      setTeachersLoading(true)
+      try {
+        const snapshot = await getDocs(collection(db, 'teachers'))
+        const records: TeacherOption[] = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data() as any
+          const designation = (data.designation || data.role || data.teacherRole || '').toString()
+          return {
+            id: docSnap.id,
+            name: data.name || '',
+            designation,
+            departmentId: data.departmentId || data.dept || '',
+          }
+        })
+        const ordered = records
+          .filter((item) => item.name)
+          .sort((a, b) => a.name.localeCompare(b.name))
+        setTeachers(ordered)
+
+        if (user?.departmentId) {
+          const dept = user.departmentId.toLowerCase()
+          const hodMatch = ordered.find((teacher) =>
+            teacher.departmentId?.toLowerCase() === dept &&
+            teacher.designation?.toLowerCase() === 'professor and hod'
+          )
+          setHodName(hodMatch?.name || '')
+          setHodDesignation(hodMatch?.designation || '')
+        } else {
+          setHodName('')
+          setHodDesignation('')
+        }
+      } catch (error) {
+        console.error('Error loading teachers:', error)
+      } finally {
+        setTeachersLoading(false)
+      }
+    }
+
+    loadTeachers()
+  }, [user?.departmentId])
 
   const handleSourceDocumentUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -315,13 +373,26 @@ export function AIReportFormatter() {
 
                   <div>
                     <Label htmlFor="guide">Guide Name</Label>
-                    <Input
-                      id="guide"
-                      placeholder="Enter guide name"
-                      className="mt-1"
-                      value={guideName}
-                      onChange={(e) => setGuideName(e.target.value)}
-                    />
+                    <Select
+                      value={selectedTeacherId}
+                      onValueChange={(value) => {
+                        setSelectedTeacherId(value)
+                        const selected = teachers.find((teacher) => teacher.id === value)
+                        setGuideName(selected?.name || '')
+                        setSelectedTeacherDesignation(selected?.designation || '')
+                      }}
+                    >
+                      <SelectTrigger id="guide" className="mt-1">
+                        <SelectValue placeholder={teachersLoading ? 'Loading teachers...' : 'Select guide'} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {teachers.map((teacher) => (
+                          <SelectItem key={teacher.id} value={teacher.id}>
+                            {teacher.name} {teacher.designation ? `(${teacher.designation})` : ''}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
 
                   <div>

@@ -1,6 +1,6 @@
 // No-Due Clearance Types
 
-export type SubmissionStatus = 'pending' | 'approved' | 'rejected';
+export type SubmissionStatus = 'pending' | 'approved' | 'rejected' | 'resubmitted';
 
 export interface NoDueSubmission {
   id: string;
@@ -26,7 +26,9 @@ export interface NoDueSubmission {
   status: SubmissionStatus;
   
   teacherComments?: string;
+  studentComments?: string;
   reviewedAt?: Date;
+  resubmittedAt?: Date;
   
   createdAt: Date;
   updatedAt: Date;

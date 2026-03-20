@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useAuth } from '@/contexts/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -7,15 +7,46 @@ import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { StudentApprovalStatus } from './StudentApprovalStatus';
 import { TeacherApprovalTable } from './TeacherApprovalTable';
+import { getStudentHallTicket } from '@/services/hallTicketService';
 import { UserCircle, ClipboardCheck } from "lucide-react"
 
 export function ApprovalsPrinting() {
   const { userProfile } = useAuth();
   const [academicYear, setAcademicYear] = useState(new Date().getFullYear().toString());
   const [semester, setSemester] = useState('1');
+  const [hallTicket, setHallTicket] = useState<{
+    downloadUrl: string;
+    semesterNumber: number;
+    generatedAt?: Date;
+  } | null>(null);
 
   const isStudent = userProfile?.role === 'student';
   const isTeacher = userProfile?.role === 'teacher';
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadHallTicket = async () => {
+      if (!userProfile || userProfile.role !== 'student' || !('usn' in userProfile)) {
+        return;
+      }
+
+      try {
+        const ticket = await getStudentHallTicket(userProfile.usn);
+        if (isMounted) {
+          setHallTicket(ticket);
+        }
+      } catch (error) {
+        console.error('Failed to load hall ticket:', error);
+      }
+    };
+
+    loadHallTicket();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [userProfile]);
 
   if (isTeacher) {
     return (
@@ -73,6 +104,31 @@ export function ApprovalsPrinting() {
                   />
                 </div>
               </div>
+            </CardContent>
+          </Card>
+
+          <Card className="mb-6">
+            <CardHeader>
+              <CardTitle className="text-lg">Hall Ticket</CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-2">
+              {hallTicket?.downloadUrl ? (
+                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                  <div className="text-sm text-muted-foreground">
+                    Semester {hallTicket.semesterNumber}
+                    {hallTicket.generatedAt && (
+                      <> · Issued {hallTicket.generatedAt.toLocaleDateString('en-IN')}</>
+                    )}
+                  </div>
+                  <Button onClick={() => window.open(hallTicket.downloadUrl, '_blank')}>
+                    Download Hall Ticket
+                  </Button>
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">
+                  Hall ticket not available yet.
+                </div>
+              )}
             </CardContent>
           </Card>
 

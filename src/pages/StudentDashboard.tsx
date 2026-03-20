@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { LogOut, User, Mail, GraduationCap, Building2 } from 'lucide-react';
 import { StudentApprovalStatus } from '@/components/StudentApprovalStatus';
 import { getAcademicContext } from '@/services/noDueAutomationService';
+import { getStudentHallTicket } from '@/services/hallTicketService';
 import { calculateSemester } from '@/types/schema';
 
 const StudentDashboard: React.FC = () => {
@@ -15,6 +16,11 @@ const StudentDashboard: React.FC = () => {
   const [academicYear, setAcademicYear] = useState('');
   const [semester, setSemester] = useState('');
   const [contextLoading, setContextLoading] = useState(true);
+  const [hallTicket, setHallTicket] = useState<{
+    downloadUrl: string;
+    semesterNumber: number;
+    generatedAt?: Date;
+  } | null>(null);
 
   const handleLogout = async () => {
     try {
@@ -57,6 +63,32 @@ const StudentDashboard: React.FC = () => {
     };
 
     loadContext();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadHallTicket = async () => {
+      if (!user || user.role !== 'student' || !('usn' in user)) {
+        return;
+      }
+
+      try {
+        const ticket = await getStudentHallTicket(user.usn);
+        if (!isMounted) {
+          return;
+        }
+        setHallTicket(ticket);
+      } catch (error) {
+        console.error('Failed to load hall ticket:', error);
+      }
+    };
+
+    loadHallTicket();
 
     return () => {
       isMounted = false;
@@ -188,6 +220,31 @@ const StudentDashboard: React.FC = () => {
                 </p>
               </div>
             </div>
+            <Card className="shadow-lg">
+              <CardHeader>
+                <CardTitle>Hall Ticket</CardTitle>
+                <CardDescription>Download your hall ticket after mentor approval.</CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-2">
+                {hallTicket?.downloadUrl ? (
+                  <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                    <div className="text-sm text-muted-foreground">
+                      Semester {hallTicket.semesterNumber}
+                      {hallTicket.generatedAt && (
+                        <> · Issued {hallTicket.generatedAt.toLocaleDateString('en-IN')}</>
+                      )}
+                    </div>
+                    <Button onClick={() => window.open(hallTicket.downloadUrl, '_blank')}>
+                      Download Hall Ticket
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="text-sm text-muted-foreground">
+                    Hall ticket not available yet.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
             {contextLoading ? (
               <Card className="shadow-lg">
                 <CardContent className="py-8 text-center text-muted-foreground">

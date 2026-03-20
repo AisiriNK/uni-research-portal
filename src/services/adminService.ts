@@ -368,12 +368,15 @@ export async function deleteOpenElectiveOffering(
  */
 export async function updateCommonClearanceMapping(
   clearanceTypeId: string,
-  teacherEmployeeId: string
+  teacherEmployeeId: string,
+  departmentId?: string
 ): Promise<void> {
-  const docRef = doc(db, 'common_clearance_mapping', clearanceTypeId);
+  const docId = departmentId ? `${departmentId}_${clearanceTypeId}` : clearanceTypeId;
+  const docRef = doc(db, 'common_clearance_mapping', docId);
   await setDoc(docRef, {
     clearanceTypeId,
     teacherEmployeeId,
+    departmentId: departmentId || null,
   });
 }
 

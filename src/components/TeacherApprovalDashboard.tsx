@@ -23,7 +23,7 @@ import { toast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
 
 export function TeacherApprovalDashboard() {
-  const { user } = useAuth();
+  const { user, userProfile } = useAuth();
   const [submissions, setSubmissions] = useState<NoDueSubmission[]>([]);
   const [loading, setLoading] = useState(true);
   const [processingId, setProcessingId] = useState<string | null>(null);
@@ -37,14 +37,29 @@ export function TeacherApprovalDashboard() {
     if (user) {
       loadSubmissions();
     }
-  }, [user]);
+  }, [user, userProfile]);
 
   const loadSubmissions = async () => {
     if (!user) return;
+    const teacherEmployeeId = user.role === 'teacher'
+      ? ('employeeId' in user ? user.employeeId : userProfile?.employeeId)
+      : undefined;
+
+    if (!teacherEmployeeId) {
+      console.error('Missing teacher employeeId for submissions query');
+      toast({
+        title: 'Teacher profile incomplete',
+        description: 'Missing employee ID. Please contact admin.',
+        variant: 'destructive',
+      });
+      setSubmissions([]);
+      setLoading(false);
+      return;
+    }
     
     try {
       setLoading(true);
-      const data = await getTeacherSubmissions(user.uid);
+      const data = await getTeacherSubmissions(teacherEmployeeId);
       setSubmissions(data);
     } catch (err) {
       console.error('Error loading submissions:', err);
@@ -118,6 +133,13 @@ export function TeacherApprovalDashboard() {
             Approved
           </Badge>
         );
+      case 'resubmitted':
+        return (
+          <Badge className="bg-blue-100 text-blue-800 border-blue-200">
+            <Clock className="mr-1 h-3 w-3" />
+            Resubmitted
+          </Badge>
+        );
       case 'rejected':
         return (
           <Badge className="bg-red-100 text-red-800 border-red-200">
@@ -135,8 +157,8 @@ export function TeacherApprovalDashboard() {
     }
   };
 
-  const pendingSubmissions = submissions.filter(s => s.status === 'pending');
-  const reviewedSubmissions = submissions.filter(s => s.status !== 'pending');
+  const pendingSubmissions = submissions.filter(s => ['pending', 'resubmitted'].includes(s.status));
+  const reviewedSubmissions = submissions.filter(s => !['pending', 'resubmitted'].includes(s.status));
 
   const SubmissionCard = ({ submission }: { submission: NoDueSubmission }) => (
     <Card key={submission.id} className="border">
@@ -186,6 +208,19 @@ export function TeacherApprovalDashboard() {
             </div>
           )}
 
+          {/* Student Resubmission Comments */}
+          {submission.studentComments && (
+            <div className="bg-blue-50 p-3 rounded-lg border border-blue-200">
+              <p className="text-sm font-medium mb-1 text-blue-800">Student Resubmission Note:</p>
+              <p className="text-sm text-gray-700">{submission.studentComments}</p>
+              {submission.resubmittedAt && (
+                <p className="text-xs text-muted-foreground mt-2">
+                  Resubmitted on {format(submission.resubmittedAt, 'MMM dd, yyyy')}
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Submission Date */}
           <p className="text-xs text-muted-foreground">
             Submitted on {format(submission.createdAt, 'MMM dd, yyyy')} at {format(submission.createdAt, 'hh:mm a')}
@@ -215,7 +250,7 @@ export function TeacherApprovalDashboard() {
               View Document
             </Button>
 
-            {submission.status === 'pending' && (
+            {['pending', 'resubmitted'].includes(submission.status) && (
               <div className="flex gap-2">
                 <Button
                   variant="destructive"

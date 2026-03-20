@@ -117,6 +117,7 @@ export async function getStudentSubmissions(studentId: string): Promise<NoDueSub
         createdAt: data.createdAt?.toDate(),
         updatedAt: data.updatedAt?.toDate(),
         reviewedAt: data.reviewedAt?.toDate(),
+        resubmittedAt: data.resubmittedAt?.toDate(),
       } as NoDueSubmission);
     });
     
@@ -158,6 +159,7 @@ export async function getTeacherSubmissions(teacherId: string): Promise<NoDueSub
         createdAt: data.createdAt?.toDate(),
         updatedAt: data.updatedAt?.toDate(),
         reviewedAt: data.reviewedAt?.toDate(),
+        resubmittedAt: data.resubmittedAt?.toDate(),
       } as NoDueSubmission);
     });
     
@@ -200,6 +202,34 @@ export async function updateSubmissionStatus(
     logNoDueEvent('submission:update_error', { submissionId, message }, 'error');
     console.error('Error updating submission:', error);
     throw new Error('Failed to update submission');
+  }
+}
+
+/**
+ * Resubmit a rejected submission with updated comments and optional new PDF
+ */
+export async function resubmitSubmission(
+  submissionId: string,
+  studentId: string,
+  data: { comments: string }
+): Promise<void> {
+  try {
+    logNoDueEvent('submission:resubmit_start', { submissionId, studentId });
+    const submissionRef = doc(db, SUBMISSIONS_COLLECTION, submissionId);
+
+    await updateDoc(submissionRef, {
+      status: 'resubmitted',
+      studentComments: data.comments,
+      resubmittedAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
+    });
+
+    logNoDueEvent('submission:resubmit_success', { submissionId, studentId });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logNoDueEvent('submission:resubmit_error', { submissionId, studentId, message }, 'error');
+    console.error('Error resubmitting submission:', error);
+    throw new Error('Failed to resubmit submission');
   }
 }
 

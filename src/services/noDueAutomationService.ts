@@ -18,6 +18,7 @@ import {
   getDoc,
   getDocs,
   setDoc,
+  updateDoc,
   query,
   where,
   Timestamp,
@@ -57,7 +58,8 @@ const COLLECTIONS = {
 } as const;
 
 // Fixed common clearance IDs (must match common_clearance_types collection)
-const COMMON_CLEARANCES = ['library', 'fees', 'sports', 'certificate'] as const;
+// Fees are handled by mentor clearance now.
+const COMMON_CLEARANCES = ['library', 'sports', 'certificate'] as const;
 
 const APPROVED_STATUSES: NoDueStatus[] = ['approved', 'mentor_approved', 'completed'];
 
@@ -262,15 +264,27 @@ export async function getOpenElectiveTeacher(
 /**
  * Fetches teacher responsible for a common clearance
  */
-export async function getCommonClearanceTeacher(clearanceTypeId: string): Promise<string> {
-  const docRef = doc(db, COLLECTIONS.COMMON_CLEARANCE_MAPPING, clearanceTypeId);
-  const docSnap = await getDoc(docRef);
-  
-  if (!docSnap.exists()) {
+export async function getCommonClearanceTeacher(
+  clearanceTypeId: string,
+  departmentId: string
+): Promise<string> {
+  const scopedDocId = `${departmentId}_${clearanceTypeId}`;
+  const scopedRef = doc(db, COLLECTIONS.COMMON_CLEARANCE_MAPPING, scopedDocId);
+  const scopedSnap = await getDoc(scopedRef);
+
+  if (scopedSnap.exists()) {
+    const mapping = scopedSnap.data() as CommonClearanceMapping;
+    return mapping.teacherEmployeeId;
+  }
+
+  const legacyRef = doc(db, COLLECTIONS.COMMON_CLEARANCE_MAPPING, clearanceTypeId);
+  const legacySnap = await getDoc(legacyRef);
+
+  if (!legacySnap.exists()) {
     throw new Error(`No staff assigned for ${clearanceTypeId} clearance`);
   }
-  
-  const mapping = docSnap.data() as CommonClearanceMapping;
+
+  const mapping = legacySnap.data() as CommonClearanceMapping;
   return mapping.teacherEmployeeId;
 }
 
@@ -393,7 +407,7 @@ export async function generateNoDueRequests(usn: string): Promise<{
           const librarian = await getLibrarian();
           teacherEmployeeId = librarian.employeeId;
         } else {
-          teacherEmployeeId = await getCommonClearanceTeacher(clearanceType);
+          teacherEmployeeId = await getCommonClearanceTeacher(clearanceType, student.departmentId);
         }
         
         const requestId = generateNoDueRequestId(usn, clearanceType);
@@ -524,7 +538,15 @@ export async function getMentorStudentSummaries(employeeId: string): Promise<Men
     const readyForMentorApproval =
       nonMentorRequests.length > 0 &&
       pendingCategories.length === 0 &&
-      mentorRequest?.status === 'pending_mentor_approval';
+      ['pending_mentor_approval', 'pending', 'resubmitted'].includes(mentorRequest?.status ?? '');
+
+    if (readyForMentorApproval && mentorRequest?.status === 'pending') {
+      const mentorRequestId = generateNoDueRequestId(student.usn, 'mentor');
+      await updateDoc(doc(db, COLLECTIONS.NO_DUE_REQUESTS, mentorRequestId), {
+        status: 'pending_mentor_approval',
+        mentorApprovalStatus: 'pending',
+      });
+    }
 
     summaries.push({
       student: {
@@ -591,10 +613,19 @@ export async function approveNoDueRequest(requestId: string): Promise<void> {
   const request = requestSnap.data() as NoDueRequest;
   
   // Approve this request
-  await setDoc(requestRef, {
-    status: 'approved',
-    approvedAt: Timestamp.now(),
-  }, { merge: true });
+  if (request.referenceType === 'mentor') {
+    await setDoc(requestRef, {
+      status: 'mentor_approved',
+      mentorApprovalStatus: 'approved',
+      mentorApprovedAt: Timestamp.now(),
+      approvedAt: Timestamp.now(),
+    }, { merge: true });
+  } else {
+    await setDoc(requestRef, {
+      status: 'approved',
+      approvedAt: Timestamp.now(),
+    }, { merge: true });
+  }
   
   // Check if this was the last pending teacher approval
   try {
@@ -648,11 +679,52 @@ export async function rejectNoDueRequest(requestId: string, reason: string): Pro
     throw new Error('Request not found');
   }
   
-  await setDoc(requestRef, {
-    status: 'rejected',
-    approvedAt: Timestamp.now(),
-    rejectionReason: reason,
-  }, { merge: true });
+  const request = requestSnap.data() as NoDueRequest;
+
+  if (request.referenceType === 'mentor') {
+    await setDoc(requestRef, {
+      status: 'mentor_rejected',
+      mentorApprovalStatus: 'rejected',
+      mentorApprovedAt: Timestamp.now(),
+      approvedAt: Timestamp.now(),
+      rejectionReason: reason,
+      mentorRejectionReason: reason,
+    }, { merge: true });
+  } else {
+    await setDoc(requestRef, {
+      status: 'rejected',
+      approvedAt: Timestamp.now(),
+      rejectionReason: reason,
+    }, { merge: true });
+  }
+}
+
+/**
+ * Resubmits a rejected no-due request with student comments
+ */
+export async function resubmitNoDueRequest(requestId: string, comment: string): Promise<void> {
+  const requestRef = doc(db, COLLECTIONS.NO_DUE_REQUESTS, requestId);
+  const requestSnap = await getDoc(requestRef);
+
+  if (!requestSnap.exists()) {
+    throw new Error('Request not found');
+  }
+
+  const request = requestSnap.data() as NoDueRequest;
+
+  if (request.status !== 'rejected' && request.status !== 'mentor_rejected') {
+    throw new Error('Only rejected requests can be resubmitted');
+  }
+
+  await setDoc(
+    requestRef,
+    {
+      status: 'resubmitted',
+      studentResubmissionComment: comment,
+      resubmittedAt: Timestamp.now(),
+    },
+    { merge: true }
+  );
 }
 
 /**
@@ -669,8 +741,8 @@ export async function checkNoDueClearanceStatus(usn: string): Promise<{
   
   const totalRequests = requests.length;
   const approvedCount = requests.filter(r => r.status === 'approved').length;
-  const pendingCount = requests.filter(r => r.status === 'pending').length;
-  const rejectedCount = requests.filter(r => r.status === 'rejected').length;
+  const pendingCount = requests.filter(r => ['pending', 'resubmitted', 'pending_mentor_approval'].includes(r.status)).length;
+  const rejectedCount = requests.filter(r => ['rejected', 'mentor_rejected'].includes(r.status)).length;
   
   return {
     allApproved: totalRequests > 0 && approvedCount === totalRequests,

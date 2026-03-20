@@ -89,10 +89,14 @@ service cloud.firestore {
       );
       
       // Students can update their own profile (except usn and email)
-      allow update: if isAuthenticated()
-                    && getProfileId() == usn
-                    && request.resource.data.usn == resource.data.usn
-                    && request.resource.data.email == resource.data.email;
+      allow update: if isAuthenticated() && (
+                    (
+                      getProfileId() == usn
+                      && request.resource.data.usn == resource.data.usn
+                      && request.resource.data.email == resource.data.email
+                    ) ||
+                    isAdminUser()
+                  );
       
       // Only admins can delete students
       allow delete: if isAdminUser();
@@ -102,9 +106,26 @@ service cloud.firestore {
     // TEACHERS COLLECTION (Document ID: employeeId)
     // =========================================================================
     
+    function getAdminDepartment() {
+      return get(/databases/$(database)/documents/admins/$(getProfileId())).data.departmentId;
+    }
+
+    function isInstitutionalTeacher(role) {
+      return role == 'librarian' || role == 'accounts' || role == 'sports' || role == 'admin';
+    }
+
     match /teachers/{employeeId} {
-      // Anyone authenticated can read teacher profiles (needed for dropdowns, lookups)
-      allow read: if isAuthenticated();
+      // Authenticated access to teacher profiles
+      // - Teachers can read all teachers
+      // - Students can read all teachers (for requests)
+      // - Admins can read all teachers
+      // - Department admins can read all teachers (for assignment)
+      allow read: if isAuthenticated() && (
+        isTeacher() ||
+        isStudent() ||
+        getUserRole() == 'admin' ||
+        getUserRole() == 'department_admin'
+      );
       
       // Teachers can create their own profile during signup
       // Admins can create teacher profiles
@@ -114,10 +135,14 @@ service cloud.firestore {
       );
       
       // Teachers can update their own profile (except employeeId and email)
-      allow update: if isAuthenticated()
-                    && getProfileId() == employeeId
-                    && request.resource.data.employeeId == resource.data.employeeId
-                    && request.resource.data.email == resource.data.email;
+      allow update: if isAuthenticated() && (
+                    (
+                      getProfileId() == employeeId
+                      && request.resource.data.employeeId == resource.data.employeeId
+                      && request.resource.data.email == resource.data.email
+                    ) ||
+                    isAdminUser()
+                  );
       
       // Only admins can delete teachers
       allow delete: if isAdminUser();
@@ -148,6 +173,30 @@ service cloud.firestore {
                     && request.resource.data.email == resource.data.email;
       
       // No one can delete admins via client
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // REPROGRAPHY ADMINS COLLECTION (Document ID: profileId)
+    // =========================================================================
+
+    match /reprography_admins/{profileId} {
+      // Reprography admins can read their own profile
+      // Admins can read reprography admin profiles
+      allow read: if isAuthenticated() && (
+        getProfileId() == profileId ||
+        resource.data.email == request.auth.token.email ||
+        isAdminUser()
+      );
+
+      // Admins can create/update reprography admin profiles
+      // Reprography admins can create/update their own profile (email match)
+      allow create, update: if isAuthenticated() && (
+        isAdminUser() ||
+        (getUserRole() == 'reprography_admin' && request.resource.data.email == request.auth.token.email)
+      );
+
+      // No one can delete reprography admin profiles via client
       allow delete: if false;
     }
     
@@ -243,6 +292,27 @@ service cloud.firestore {
       // Only admins can write mappings
       allow write: if isAdminUser();
     }
+
+    // =========================================================================
+    // EXAM_SCHEDULE COLLECTION
+    // =========================================================================
+
+    match /exam_schedule/{docId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdminUser();
+    }
+
+    // =========================================================================
+    // HALL_TICKETS COLLECTION
+    // =========================================================================
+
+    match /hall_tickets/{docId} {
+      allow read: if isAuthenticated() && (
+        resource.data.usn == getProfileId() ||
+        isAdminUser()
+      );
+      allow write: if isAdminUser();
+    }
     
     // =========================================================================
     // NO_DUE_REQUESTS COLLECTION (Core of the system)
@@ -283,6 +353,13 @@ service cloud.firestore {
                         && resource.data.teacherEmployeeId == getProfileId()
                         && request.resource.data.usn == resource.data.usn  // Can't change student
                         && request.resource.data.teacherEmployeeId == resource.data.teacherEmployeeId  // Can't reassign
+                      ) ||
+                      (
+                        isStudent()
+                        && resource.data.usn == getProfileId()
+                        && request.resource.data.usn == resource.data.usn
+                        && request.resource.data.teacherEmployeeId == resource.data.teacherEmployeeId
+                        && (resource.data.status == 'rejected' || resource.data.status == 'mentor_rejected')
                       ) ||
                       (
                         isAdminUser()
@@ -383,6 +460,7 @@ service cloud.firestore {
       allow read: if isAuthenticated() && (
         (resource != null && resource.data.studentId == request.auth.uid) ||
         getUserRole() == 'reprography_admin' ||
+        exists(/databases/$(database)/documents/reprography_admins/$(request.auth.uid)) ||
         getUserRole() == 'student'
       );
       
@@ -392,7 +470,10 @@ service cloud.firestore {
                     && request.resource.data.studentId == request.auth.uid;
       
       // Only reprography admins can update print request status
-      allow update: if isAuthenticated() && getUserRole() == 'reprography_admin';
+      allow update: if isAuthenticated() && (
+        getUserRole() == 'reprography_admin' ||
+        exists(/databases/$(database)/documents/reprography_admins/$(request.auth.uid))
+      );
       
       // No one can delete print requests (maintain audit trail)
       allow delete: if false;

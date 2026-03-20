@@ -6,7 +6,7 @@ import {
   onAuthStateChanged,
   User as FirebaseUser,
 } from 'firebase/auth';
-import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, getDoc, serverTimestamp, collection, query, where, getDocs } from 'firebase/firestore';
 import { auth, db } from '@/config/firebase';
 import { 
   User, 
@@ -15,7 +15,8 @@ import {
   UserRole,
   Student,
   Teacher,
-  DepartmentAdmin
+  DepartmentAdmin,
+  ReprographyAdmin
 } from '@/types/user';
 
 const AuthContext = createContext<UserContextType | undefined>(undefined);
@@ -73,12 +74,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const userDocRef = doc(db, 'users', firebaseUser.uid);
       const userDocSnap = await getDoc(userDocRef);
 
-      if (!userDocSnap.exists()) {
+      let userData = userDocSnap.exists() ? userDocSnap.data() : null;
+
+      if (!userData && firebaseUser.email) {
+        const email = firebaseUser.email.toLowerCase();
+        const reproQuery = query(
+          collection(db, 'reprography_admins'),
+          where('email', '==', email)
+        );
+        const reproSnap = await getDocs(reproQuery);
+
+        if (!reproSnap.empty) {
+          const reproDoc = reproSnap.docs[0];
+          userData = {
+            email,
+            role: 'reprography_admin',
+            profileId: reproDoc.id,
+          };
+          await setDoc(userDocRef, {
+            ...userData,
+            createdAt: serverTimestamp(),
+            createdBy: 'self',
+          }, { merge: true });
+        }
+      }
+
+      if (!userData) {
         console.error('User document not found');
         return null;
       }
-
-      const userData = userDocSnap.data();
       const role = userData.role as UserRole;
 
       // Get detailed profile from role-specific collection
@@ -138,6 +162,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           employeeId: profileData.employeeId,
           departmentId: profileData.departmentId,
           teacherRole: profileData.role, // Teacher's specific role (faculty/mentor/etc)
+          designation: profileData.designation,
           createdAt: profileData.createdAt?.toDate() || new Date(),
           // Legacy aliases
           empId: profileData.employeeId,
@@ -165,6 +190,51 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           // Legacy alias
           dept: profileData.departmentId,
         } as DepartmentAdmin;
+      } else if (role === 'reprography_admin') {
+        const profileDocRef = doc(db, 'reprography_admins', profileId);
+        const profileDocSnap = await getDoc(profileDocRef);
+
+        profileData = profileDocSnap.exists() ? profileDocSnap.data() : null;
+
+        const name =
+          profileData?.name ||
+          userData?.name ||
+          firebaseUser.displayName ||
+          firebaseUser.email ||
+          'Reprography Admin';
+
+        if (!profileData) {
+          const fallbackProfileId = firebaseUser.uid;
+          await setDoc(doc(db, 'reprography_admins', fallbackProfileId), {
+            email: firebaseUser.email,
+            name,
+            employeeId: profileId || fallbackProfileId,
+            createdAt: serverTimestamp(),
+          }, { merge: true });
+
+          await setDoc(doc(db, 'users', firebaseUser.uid), {
+            email: firebaseUser.email,
+            role: 'reprography_admin',
+            profileId: fallbackProfileId,
+          }, { merge: true });
+
+          const fallbackSnap = await getDoc(doc(db, 'reprography_admins', fallbackProfileId));
+          profileData = fallbackSnap.exists() ? fallbackSnap.data() : null;
+        }
+
+        return {
+          uid: firebaseUser.uid,
+          email: firebaseUser.email!,
+          name,
+          role: 'reprography_admin',
+          employeeId: profileData?.employeeId || profileData?.empId,
+          departmentId: profileData?.departmentId || profileData?.dept,
+          designation: profileData?.designation,
+          createdAt: profileData?.createdAt?.toDate() || new Date(),
+          // Legacy aliases
+          empId: profileData?.empId || profileData?.employeeId,
+          dept: profileData?.dept || profileData?.departmentId,
+        } as ReprographyAdmin;
       }
       
       return null;

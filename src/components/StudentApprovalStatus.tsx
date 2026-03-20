@@ -7,9 +7,12 @@ import { Progress } from '@/components/ui/progress';
 import { Loader2, CheckCircle, XCircle, Clock, Download, AlertCircle } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
-import { NoDueRequestWithDetails } from '@/types/schema';
-import { getStudentNoDueRequests } from '@/services/noDueAutomationService';
+import { NoDueRequestWithDetails, generateNoDueRequestId } from '@/types/schema';
+import { getStudentNoDueRequests, resubmitNoDueRequest } from '@/services/noDueAutomationService';
 import { openNoDueCertificate } from '@/services/certificateService';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 
 interface StudentApprovalStatusProps {
   academicYear: string;
@@ -24,6 +27,10 @@ export function StudentApprovalStatus({ academicYear, semester }: StudentApprova
   const [requests, setRequests] = useState<NoDueRequestWithDetails[]>([]);
   const [loading, setLoading] = useState(true);
   const [allComplete, setAllComplete] = useState(false);
+  const [resubmitDialogOpen, setResubmitDialogOpen] = useState(false);
+  const [resubmitTarget, setResubmitTarget] = useState<NoDueRequestWithDetails | null>(null);
+  const [resubmitComment, setResubmitComment] = useState('');
+  const [resubmitting, setResubmitting] = useState(false);
 
   useEffect(() => {
     if (userProfile) {
@@ -106,6 +113,14 @@ export function StudentApprovalStatus({ academicYear, semester }: StudentApprova
       );
     }
 
+    if (status === 'resubmitted') {
+      return (
+        <Badge className="bg-blue-100 text-blue-800">
+          <Clock className="mr-1 h-3 w-3" />Resubmitted
+        </Badge>
+      );
+    }
+
     if (REJECTED_STATUSES.includes(status)) {
       return (
         <Badge className="bg-red-100 text-red-800">
@@ -152,6 +167,45 @@ export function StudentApprovalStatus({ academicYear, semester }: StudentApprova
       return format(timestamp.toDate(), 'MMM dd, yyyy');
     } catch {
       return '-';
+    }
+  };
+
+  const openResubmitDialog = (request: NoDueRequestWithDetails) => {
+    setResubmitTarget(request);
+    setResubmitComment('');
+    setResubmitDialogOpen(true);
+  };
+
+  const handleResubmit = async () => {
+    if (!resubmitTarget || !resubmitComment.trim()) {
+      toast({
+        title: 'Comments required',
+        description: 'Please add a comment before resubmitting.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      setResubmitting(true);
+      const requestId = generateNoDueRequestId(resubmitTarget.usn, resubmitTarget.referenceId);
+      await resubmitNoDueRequest(requestId, resubmitComment.trim());
+      toast({
+        title: 'Resubmitted',
+        description: 'Your request has been resubmitted to the teacher.',
+      });
+      setResubmitDialogOpen(false);
+      setResubmitTarget(null);
+      setResubmitComment('');
+      await loadRequests();
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to resubmit the request.',
+        variant: 'destructive',
+      });
+    } finally {
+      setResubmitting(false);
     }
   };
 
@@ -230,6 +284,7 @@ export function StudentApprovalStatus({ academicYear, semester }: StudentApprova
   }
 
   return (
+    <>
     <div className="space-y-6">
       {/* Overall Progress */}
       <Card>
@@ -312,7 +367,13 @@ export function StudentApprovalStatus({ academicYear, semester }: StudentApprova
                         </div>
                         <div>
                           <span className="text-muted-foreground">Updated:</span>{' '}
-                          <span>{request.approvedAt ? formatDate(request.approvedAt) : '-'}</span>
+                          <span>
+                            {request.status === 'resubmitted'
+                              ? formatDate(request.resubmittedAt)
+                              : request.approvedAt
+                              ? formatDate(request.approvedAt)
+                              : '-'}
+                          </span>
                         </div>
                       </div>
 
@@ -325,6 +386,24 @@ export function StudentApprovalStatus({ academicYear, semester }: StudentApprova
                           <p className="text-sm text-red-700 mt-1">{request.rejectionReason}</p>
                         </div>
                       )}
+
+                      {request.status === 'resubmitted' && request.studentResubmissionComment && (
+                        <div className="mt-2 p-2 bg-blue-50 border border-blue-200 rounded">
+                          <p className="text-sm font-medium text-blue-800 flex items-center gap-2">
+                            <Clock className="h-4 w-4" />
+                            Resubmission Comment:
+                          </p>
+                          <p className="text-sm text-blue-700 mt-1">{request.studentResubmissionComment}</p>
+                        </div>
+                      )}
+
+                      {REJECTED_STATUSES.includes(request.status) && (
+                        <div className="pt-2">
+                          <Button size="sm" variant="secondary" onClick={() => openResubmitDialog(request)}>
+                            Resubmit
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </CardContent>
@@ -334,5 +413,33 @@ export function StudentApprovalStatus({ academicYear, semester }: StudentApprova
         </CardContent>
       </Card>
     </div>
+    
+    <Dialog open={resubmitDialogOpen} onOpenChange={setResubmitDialogOpen}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Resubmit Request</DialogTitle>
+          <DialogDescription>Explain what you have corrected for this no-due request.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <Label htmlFor="resubmit-comment">Comments *</Label>
+          <Textarea
+            id="resubmit-comment"
+            value={resubmitComment}
+            onChange={(e) => setResubmitComment(e.target.value)}
+            placeholder="Add your resubmission note"
+            rows={4}
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setResubmitDialogOpen(false)} disabled={resubmitting}>
+            Cancel
+          </Button>
+          <Button onClick={handleResubmit} disabled={resubmitting}>
+            {resubmitting ? 'Resubmitting...' : 'Resubmit'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

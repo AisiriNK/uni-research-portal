@@ -17,9 +17,25 @@ import {
   updateDoc,
   getDoc,
   serverTimestamp,
+  setDoc,
 } from 'firebase/firestore';
-import { db } from '@/config/firebase';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { db, storage } from '@/config/firebase';
 import { NoDueRequest, Student, Curriculum } from '@/types/schema';
+
+async function loadBnmitLogoDataUrl(): Promise<string | null> {
+  try {
+    const response = await fetch('/bnmit-logo.jpeg');
+    if (!response.ok) {
+      return null;
+    }
+    const svgText = await response.text();
+    const encoded = btoa(unescape(encodeURIComponent(svgText)));
+    return `data:image/svg+xml;base64,${encoded}`;
+  } catch (error) {
+    return null;
+  }
+}
 
 /**
  * Hall ticket data structure
@@ -35,6 +51,7 @@ export interface HallTicketData {
   subjects: Array<{
     subjectCode: string;
     subjectName: string;
+    examDate?: string;
   }>;
   generatedDate: Date;
 }
@@ -78,6 +95,20 @@ async function getHallTicketData(usn: string): Promise<HallTicketData> {
       where('semesterNumber', '==', semesterNumber)
     );
     const curriculumSnap = await getDocs(curriculumQuery);
+
+    const examScheduleQuery = query(
+      collection(db, 'exam_schedule'),
+      where('departmentId', '==', student.departmentId),
+      where('semesterNumber', '==', semesterNumber)
+    );
+    const examScheduleSnap = await getDocs(examScheduleQuery);
+    const examDates = new Map<string, string>();
+    examScheduleSnap.docs.forEach((docSnap) => {
+      const data = docSnap.data() as any;
+      if (data.subjectCode) {
+        examDates.set(String(data.subjectCode).toUpperCase(), data.examDate || '');
+      }
+    });
     
     const subjects: Array<{ subjectCode: string; subjectName: string }> = [];
     
@@ -86,6 +117,7 @@ async function getHallTicketData(usn: string): Promise<HallTicketData> {
       subjects.push({
         subjectCode: curr.subjectCode,
         subjectName: curr.subjectName,
+        examDate: examDates.get(String(curr.subjectCode).toUpperCase()) || '',
       });
     }
     
@@ -162,6 +194,15 @@ export async function generateHallTicket(
     const margin = 20;
     
     // ========== HEADER ==========
+    const logoDataUrl = await loadBnmitLogoDataUrl();
+    if (logoDataUrl) {
+      try {
+        pdfDoc.addImage(logoDataUrl, 'SVG', margin, margin - 5, 18, 18);
+      } catch (error) {
+        // Ignore logo rendering issues
+      }
+    }
+
     // Institution name
     pdfDoc.setFontSize(20);
     pdfDoc.setFont('helvetica', 'bold');
@@ -224,6 +265,12 @@ export async function generateHallTicket(
     pdfDoc.setFont('helvetica', 'normal');
     pdfDoc.text(data.batchYear.toString(), detailsValueLeft, yPos);
     yPos += 15;
+
+    pdfDoc.setFont('helvetica', 'bold');
+    pdfDoc.text('Date of Issue:', detailsLeft, yPos);
+    pdfDoc.setFont('helvetica', 'normal');
+    pdfDoc.text(data.generatedDate.toLocaleDateString('en-IN'), detailsValueLeft, yPos);
+    yPos += 12;
     
     // ========== SUBJECTS TABLE ==========
     pdfDoc.setFont('helvetica', 'bold');
@@ -238,8 +285,10 @@ export async function generateHallTicket(
     pdfDoc.setFont('helvetica', 'bold');
     pdfDoc.setFontSize(10);
     pdfDoc.text('S.No', margin + 3, yPos);
-    pdfDoc.text('Subject Code', margin + 20, yPos);
-    pdfDoc.text('Subject Name', margin + 60, yPos);
+    pdfDoc.text('Subject Code', margin + 15, yPos);
+    pdfDoc.text('Subject Name', margin + 45, yPos);
+    pdfDoc.text('Exam Date', margin + 115, yPos);
+    pdfDoc.text('Student Signature', margin + 145, yPos);
     
     yPos += 10;
     
@@ -251,13 +300,16 @@ export async function generateHallTicket(
       pdfDoc.line(margin, yPos - 5, pageWidth - margin, yPos - 5);
       
       pdfDoc.text((index + 1).toString(), margin + 3, yPos);
-      pdfDoc.text(subject.subjectCode, margin + 20, yPos);
+      pdfDoc.text(subject.subjectCode, margin + 15, yPos);
       
       // Wrap subject name if too long
       const subjectName = subject.subjectName.length > 60 
         ? subject.subjectName.substring(0, 60) + '...' 
         : subject.subjectName;
-      pdfDoc.text(subjectName, margin + 60, yPos);
+      pdfDoc.text(subjectName, margin + 45, yPos);
+
+      pdfDoc.text(subject.examDate || '', margin + 115, yPos);
+      pdfDoc.line(margin + 145, yPos + 1, pageWidth - margin - 5, yPos + 1);
       
       yPos += 8;
     });
@@ -284,7 +336,7 @@ export async function generateHallTicket(
     const footerYPos = pageHeight - 25;
     pdfDoc.setFontSize(9);
     pdfDoc.setFont('helvetica', 'italic');
-    pdfDoc.text('This is a computer-generated hall ticket. No signature is required.', pageWidth / 2, footerYPos, { align: 'center' });
+    pdfDoc.text('This is a computer-generated hall ticket.', pageWidth / 2, footerYPos, { align: 'center' });
     pdfDoc.text(`Generated on: ${data.generatedDate.toLocaleDateString('en-IN')} at ${data.generatedDate.toLocaleTimeString('en-IN')}`, pageWidth / 2, footerYPos + 5, { align: 'center' });
     
     // Border around entire page
@@ -307,12 +359,85 @@ export async function generateHallTicket(
         status: 'completed',
       });
     }
+
+    // Upload hall ticket for student download
+    const pdfBlob = pdfDoc.output('blob');
+    const storagePath = `hall-tickets/${usn}/HallTicket_${usn}_Sem${data.semester}_${Date.now()}.pdf`;
+    const storageRef = ref(storage, storagePath);
+    try {
+      await uploadBytes(storageRef, pdfBlob, { contentType: 'application/pdf' });
+    } catch (error: any) {
+      const code = error?.code || 'storage/unknown';
+      const serverResponse = error?.serverResponse || error?.customData?.serverResponse || '';
+      throw new Error(`Storage upload failed (${code}). ${serverResponse}`.trim());
+    }
+
+    let downloadUrl = '';
+    try {
+      downloadUrl = await getDownloadURL(storageRef);
+    } catch (error) {
+      // Ignore download URL failures; clients can resolve later.
+    }
+
+    const hallTicketId = `HT_${usn}_SEM${data.semester}`;
+    await setDoc(
+      doc(db, 'hall_tickets', hallTicketId),
+      {
+        usn,
+        semesterNumber: data.semester,
+        departmentId: data.departmentId,
+        section: data.section,
+        studentName: data.studentName,
+        downloadUrl,
+        storagePath,
+        generatedAt: serverTimestamp(),
+        generatedBy: adminId,
+      },
+      { merge: true }
+    );
     
     // Return PDF as blob
-    return pdfDoc.output('blob');
+    return pdfBlob;
   } catch (error: any) {
     throw new Error(error.message || 'Failed to generate hall ticket');
   }
+}
+
+export async function getStudentHallTicket(usn: string): Promise<{
+  downloadUrl: string;
+  semesterNumber: number;
+  generatedAt?: Date;
+} | null> {
+  const ticketsQuery = query(
+    collection(db, 'hall_tickets'),
+    where('usn', '==', usn)
+  );
+  const ticketsSnap = await getDocs(ticketsQuery);
+  if (ticketsSnap.empty) {
+    return null;
+  }
+  const latest = ticketsSnap.docs
+    .map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() as any) }))
+    .sort((a, b) => {
+      const aTime = a.generatedAt?.toDate ? a.generatedAt.toDate().getTime() : 0;
+      const bTime = b.generatedAt?.toDate ? b.generatedAt.toDate().getTime() : 0;
+      return bTime - aTime;
+    })[0];
+
+  let resolvedUrl = latest.downloadUrl || '';
+  if (!resolvedUrl && latest.storagePath) {
+    try {
+      resolvedUrl = await getDownloadURL(ref(storage, latest.storagePath));
+    } catch (error) {
+      resolvedUrl = '';
+    }
+  }
+
+  return {
+    downloadUrl: resolvedUrl,
+    semesterNumber: latest.semesterNumber,
+    generatedAt: latest.generatedAt?.toDate ? latest.generatedAt.toDate() : undefined,
+  };
 }
 
 /**

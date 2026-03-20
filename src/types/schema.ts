@@ -41,6 +41,7 @@ export type TeacherRole =
 export interface Teacher {
   employeeId: string;             // Unique Employee ID (Document ID)
   name: string;                   // Teacher/Staff full name
+  designation?: string;           // Job title/designation (e.g., Assistant Professor)
   departmentId: string;           // Department code OR "institution" for institution-wide roles
   email: string;                  // Email address
   role: TeacherRole;              // Primary role
@@ -141,7 +142,7 @@ export interface CommonClearanceType {
 
 // ============================================================================
 // COLLECTION: common_clearance_mapping
-// Document ID: {clearanceTypeId}
+// Document ID: {departmentId}_{clearanceTypeId} (scoped) or {clearanceTypeId} (legacy)
 // Purpose: Maps common clearances to responsible staff
 // NOTE: Librarian is COMMON for ALL departments
 // NOTE: Mentor clearance must NOT be mapped here (uses student.mentorEmployeeId)
@@ -150,6 +151,7 @@ export interface CommonClearanceType {
 export interface CommonClearanceMapping {
   clearanceTypeId: string;        // "library", "fees", "sports", "certificate"
   teacherEmployeeId: string;      // Responsible staff employee ID
+  departmentId?: string | null;   // Optional department scope
 }
 
 // ============================================================================
@@ -166,6 +168,7 @@ export type ReferenceType =
 
 export type NoDueStatus = 
   | 'pending'                    // Waiting for teacher approval
+  | 'resubmitted'                // Student resubmitted after rejection
   | 'approved'                   // Teacher approved
   | 'rejected'                   // Teacher rejected
   | 'pending_mentor_approval'    // All teachers approved, waiting for mentor
@@ -190,6 +193,8 @@ export interface NoDueRequest {
   requestedAt: Timestamp;         // When request was created
   approvedAt?: Timestamp;         // When approved/rejected (optional)
   rejectionReason?: string;       // Reason for rejection (optional)
+  studentResubmissionComment?: string; // Student resubmission note (optional)
+  resubmittedAt?: Timestamp;       // When student resubmitted (optional)
   
   // Mentor approval stage (after all teachers approve)
   mentorApprovalStatus?: 'pending' | 'approved' | 'rejected';  // Mentor's decision

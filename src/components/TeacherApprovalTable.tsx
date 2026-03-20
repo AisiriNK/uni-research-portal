@@ -210,6 +210,12 @@ export function TeacherApprovalTable() {
             <Clock className="mr-1 h-3 w-3" />Mentor Pending
           </Badge>
         );
+      case 'resubmitted':
+        return (
+          <Badge className="bg-blue-100 text-blue-800">
+            <Clock className="mr-1 h-3 w-3" />Resubmitted
+          </Badge>
+        );
       case 'rejected':
       case 'mentor_rejected':
         return (
@@ -243,13 +249,13 @@ export function TeacherApprovalTable() {
 
   const teacherApprovals = approvals.filter((approval) => approval.referenceType !== 'mentor');
   const mentorApprovals = approvals.filter((approval) => approval.referenceType === 'mentor');
-  const pendingApprovals = teacherApprovals.filter((approval) => approval.status === 'pending');
-  const processedApprovals = teacherApprovals.filter((approval) => approval.status !== 'pending');
+  const pendingApprovals = teacherApprovals.filter((approval) => ['pending', 'resubmitted'].includes(approval.status));
+  const processedApprovals = teacherApprovals.filter((approval) => !['pending', 'resubmitted'].includes(approval.status));
   const mentorPendingApprovals = mentorApprovals.filter((approval) =>
-    ['pending', 'pending_mentor_approval'].includes(approval.status)
+    ['pending', 'pending_mentor_approval', 'resubmitted'].includes(approval.status)
   );
   const mentorProcessedApprovals = mentorApprovals.filter((approval) =>
-    !['pending', 'pending_mentor_approval'].includes(approval.status)
+    !['pending', 'pending_mentor_approval', 'resubmitted'].includes(approval.status)
   );
   const approvedCount = teacherApprovals.filter((approval) =>
     ['approved', 'mentor_approved', 'completed'].includes(approval.status)
@@ -383,6 +389,16 @@ export function TeacherApprovalTable() {
                         <div className="text-xs text-muted-foreground">
                           {approval.departmentId} • Sem {approval.semesterNumber}
                         </div>
+                        {approval.status === 'resubmitted' && (
+                          <div className="mt-2 space-y-1">
+                            <Badge className="bg-blue-100 text-blue-800">Resubmitted</Badge>
+                            {approval.studentResubmissionComment && (
+                              <p className="text-xs text-muted-foreground">
+                                {approval.studentResubmissionComment}
+                              </p>
+                            )}
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell>{approval.usn}</TableCell>
                       <TableCell>
@@ -545,7 +561,7 @@ export function TeacherApprovalTable() {
                     <TableBody>
                       {mentorPendingApprovals.map((approval) => {
                         const rowKey = generateNoDueRequestId(approval.usn, approval.referenceId);
-                        const canAct = approval.status === 'pending_mentor_approval' && !processing;
+                        const canAct = ['pending_mentor_approval', 'resubmitted'].includes(approval.status) && !processing;
                         const summary = mentorSummaryByUsn.get(approval.usn);
                         const summaryRequests = summary?.requests ?? mentorRequestDetails[approval.usn] ?? undefined;
                         const totalRequests = summaryRequests?.length ?? 0;
@@ -560,7 +576,19 @@ export function TeacherApprovalTable() {
                         ).length ?? 0;
                         return (
                           <TableRow key={rowKey}>
-                            <TableCell className="font-medium">{approval.studentName}</TableCell>
+                            <TableCell className="font-medium">
+                              {approval.studentName}
+                              {approval.status === 'resubmitted' && (
+                                <div className="mt-2 space-y-1">
+                                  <Badge className="bg-blue-100 text-blue-800">Resubmitted</Badge>
+                                  {approval.studentResubmissionComment && (
+                                    <p className="text-xs text-muted-foreground">
+                                      {approval.studentResubmissionComment}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                            </TableCell>
                             <TableCell>{approval.usn}</TableCell>
                             <TableCell>{getStatusBadge(approval.status)}</TableCell>
                             <TableCell className="text-xs">
@@ -658,9 +686,10 @@ export function TeacherApprovalTable() {
 
         {mentorSummaries.map((summary) => {
           const mentorRequest = summary.mentorRequest;
+          const mentorApproved = ['mentor_approved', 'completed', 'approved'].includes(mentorRequest?.status ?? '');
           const canAct =
             summary.readyForMentorApproval &&
-            mentorRequest?.status === 'pending_mentor_approval' &&
+            ['pending_mentor_approval', 'resubmitted'].includes(mentorRequest?.status ?? '') &&
             !processing;
           const cardKey = summary.student.usn;
 
@@ -675,30 +704,38 @@ export function TeacherApprovalTable() {
                   </CardDescription>
                 </div>
                 <div className="flex flex-col gap-2 md:items-end">
-                  <Badge className={summary.readyForMentorApproval ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}>
-                    {summary.readyForMentorApproval ? 'Ready for mentor approval' : 'Waiting for teachers'}
-                  </Badge>
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      onClick={() => mentorRequest && handleApprove(mentorRequest)}
-                      disabled={!canAct || !mentorRequest}
-                      className="bg-green-600 hover:bg-green-700"
-                    >
-                      <CheckCircle className="mr-1 h-3 w-3" />
-                      Approve
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => mentorRequest && handleRejectClick(mentorRequest)}
-                      disabled={!canAct || !mentorRequest}
-                      className="text-red-600 hover:text-red-700"
-                    >
-                      <XCircle className="mr-1 h-3 w-3" />
-                      Reject
-                    </Button>
-                  </div>
+                  {mentorApproved ? (
+                    <Badge className="bg-green-100 text-green-800">
+                      <CheckCircle className="mr-1 h-3 w-3" />Approved
+                    </Badge>
+                  ) : (
+                    <>
+                      <Badge className={summary.readyForMentorApproval ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}>
+                        {summary.readyForMentorApproval ? 'Ready for mentor approval' : 'Waiting for teachers'}
+                      </Badge>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => mentorRequest && handleApprove(mentorRequest)}
+                          disabled={!canAct || !mentorRequest}
+                          className="bg-green-600 hover:bg-green-700"
+                        >
+                          <CheckCircle className="mr-1 h-3 w-3" />
+                          Approve
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => mentorRequest && handleRejectClick(mentorRequest)}
+                          disabled={!canAct || !mentorRequest}
+                          className="text-red-600 hover:text-red-700"
+                        >
+                          <XCircle className="mr-1 h-3 w-3" />
+                          Reject
+                        </Button>
+                      </div>
+                    </>
+                  )}
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">

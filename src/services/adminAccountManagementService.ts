@@ -186,6 +186,7 @@ export async function createStudentAccountsBatch(
 export interface TeacherAccountData {
   employeeId: string;
   name: string;
+  designation: string;
   email: string;
   departmentId: string;
   teacherRole: 'faculty' | 'librarian' | 'accounts' | 'sports' | 'admin';
@@ -206,10 +207,10 @@ export async function createTeacherAccount(
   adminId: string
 ): Promise<{ employeeId: string; temporaryPassword: string }> {
   try {
-    const { employeeId, name, email, departmentId, teacherRole } = teacherData;
+    const { employeeId, name, designation, email, departmentId, teacherRole } = teacherData;
     
     // Validation
-    if (!employeeId || !name || !email || !departmentId || !teacherRole) {
+    if (!employeeId || !name || !designation || !email || !departmentId || !teacherRole) {
       throw new Error('All teacher fields are required');
     }
     
@@ -239,6 +240,7 @@ export async function createTeacherAccount(
     await setDoc(teacherRef, {
       employeeId,
       name,
+      designation,
       email,
       departmentId,
       role: teacherRole,

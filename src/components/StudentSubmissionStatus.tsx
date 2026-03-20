@@ -4,13 +4,16 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Loader2, FileText, CheckCircle, XCircle, Clock, ExternalLink, MessageSquare, Printer } from 'lucide-react';
-import { getStudentSubmissions } from '@/services/noDueService';
+import { getStudentSubmissions, resubmitSubmission } from '@/services/noDueService';
 import { getPrintRequestBySubmission, createPrintRequest } from '@/services/printService';
 import { NoDueSubmission } from '@/types/nodue';
 import { PrintRequest, PrintOptions } from '@/types/print';
 import { toast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
 import { PrintRequestForm } from './PrintRequestForm';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 
 export function StudentSubmissionStatus() {
   const { user, userProfile } = useAuth();
@@ -19,6 +22,10 @@ export function StudentSubmissionStatus() {
   const [loading, setLoading] = useState(true);
   const [selectedSubmission, setSelectedSubmission] = useState<NoDueSubmission | null>(null);
   const [printDialogOpen, setPrintDialogOpen] = useState(false);
+  const [resubmitDialogOpen, setResubmitDialogOpen] = useState(false);
+  const [resubmitTarget, setResubmitTarget] = useState<NoDueSubmission | null>(null);
+  const [resubmitComments, setResubmitComments] = useState('');
+  const [resubmitLoading, setResubmitLoading] = useState(false);
 
   useEffect(() => {
     if (user) {
@@ -97,6 +104,49 @@ export function StudentSubmissionStatus() {
     }
   };
 
+  const openResubmitDialog = (submission: NoDueSubmission) => {
+    setResubmitTarget(submission);
+    setResubmitComments('');
+    setResubmitDialogOpen(true);
+  };
+
+  const handleResubmit = async () => {
+    if (!user || !resubmitTarget) return;
+    if (!resubmitComments.trim()) {
+      toast({
+        title: 'Comments required',
+        description: 'Add a short note before resubmitting',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      setResubmitLoading(true);
+      await resubmitSubmission(resubmitTarget.id, user.uid, {
+        comments: resubmitComments.trim(),
+      });
+
+      toast({
+        title: 'Resubmitted',
+        description: 'Your request has been resubmitted to the teacher.',
+      });
+
+      setResubmitDialogOpen(false);
+      setResubmitTarget(null);
+      setResubmitComments('');
+      await loadSubmissions();
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to resubmit your request',
+        variant: 'destructive',
+      });
+    } finally {
+      setResubmitLoading(false);
+    }
+  };
+
   const getPrintStatusBadge = (printRequest: PrintRequest) => {
     switch (printRequest.status) {
       case 'completed':
@@ -132,6 +182,13 @@ export function StudentSubmissionStatus() {
           <Badge className="bg-green-100 text-green-800 border-green-200">
             <CheckCircle className="mr-1 h-3 w-3" />
             Approved
+          </Badge>
+        );
+      case 'resubmitted':
+        return (
+          <Badge className="bg-blue-100 text-blue-800 border-blue-200">
+            <Clock className="mr-1 h-3 w-3" />
+            Resubmitted
           </Badge>
         );
       case 'rejected':
@@ -255,6 +312,24 @@ export function StudentSubmissionStatus() {
                   </div>
                 )}
 
+                {/* Student Resubmission Comments */}
+                {submission.studentComments && (
+                  <div className="p-3 rounded-lg border bg-blue-50 border-blue-200">
+                    <div className="flex items-start space-x-2">
+                      <MessageSquare className="h-4 w-4 mt-0.5 text-blue-600" />
+                      <div className="flex-1">
+                        <h4 className="text-sm font-medium text-blue-800">Your Resubmission Note</h4>
+                        <p className="text-sm text-gray-700 mt-1">{submission.studentComments}</p>
+                        {submission.resubmittedAt && (
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Resubmitted on {format(submission.resubmittedAt, 'MMM dd, yyyy')}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Print Status - Show prominently if print request exists */}
                 {submission.status === 'approved' && printRequests.has(submission.id) && (
                   <div className={`p-3 rounded-lg border ${
@@ -338,6 +413,15 @@ export function StudentSubmissionStatus() {
                       <ExternalLink className="mr-2 h-4 w-4" />
                       View Document
                     </Button>
+                    {submission.status === 'rejected' && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => openResubmitDialog(submission)}
+                      >
+                        Resubmit
+                      </Button>
+                    )}
                     
                     {/* Print Button - Only for Approved Submissions without print request */}
                     {submission.status === 'approved' && !printRequests.has(submission.id) && (
@@ -374,6 +458,39 @@ export function StudentSubmissionStatus() {
         submissionTitle={selectedSubmission.metadata.title}
       />
     )}
+
+    <Dialog open={resubmitDialogOpen} onOpenChange={setResubmitDialogOpen}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Resubmit Rejected Request</DialogTitle>
+          <DialogDescription>
+            Add a note for the teacher to explain the changes.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="resubmit-comments">Comments *</Label>
+            <Textarea
+              id="resubmit-comments"
+              placeholder="Explain what you have updated"
+              value={resubmitComments}
+              onChange={(e) => setResubmitComments(e.target.value)}
+              rows={4}
+            />
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setResubmitDialogOpen(false)} disabled={resubmitLoading}>
+            Cancel
+          </Button>
+          <Button onClick={handleResubmit} disabled={resubmitLoading}>
+            {resubmitLoading ? 'Resubmitting...' : 'Resubmit'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </>
   );
 }

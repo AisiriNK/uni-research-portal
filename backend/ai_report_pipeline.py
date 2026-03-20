@@ -423,7 +423,7 @@ All [ and ] pairs in #text[...] are balanced.
 #counter(page).update(starting_page+1)
 
 #let department = "B.E/Dept of {dept}/BNMIT"
-#let academic_year = {year}
+#let academic_year = "{year}"
 #let project_title = "{project_title}"
 #set page(
   paper: "a4",

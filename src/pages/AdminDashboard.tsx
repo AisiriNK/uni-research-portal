@@ -13,8 +13,10 @@ import { LogOut, User, Mail, Shield, Building2, Users, GraduationCap, BookOpen, 
 import { adminAccountManagementService } from '@/services/adminAccountManagementService';
 import { getAcademicContext, updateAcademicContext } from '@/services/adminService';
 import { generateNoDueRequests } from '@/services/noDueAutomationService';
+import { getStudentsReadyForHallTicket } from '@/services/mentorApprovalService';
+import { downloadHallTicket } from '@/services/hallTicketService';
 import { calculateSemester, AcademicContext } from '@/types/schema';
-import { collection, doc, getDoc, getDocs, onSnapshot, orderBy, query, setDoc, where, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, onSnapshot, orderBy, query, setDoc, where, serverTimestamp, deleteDoc } from 'firebase/firestore';
 import { db } from '@/config/firebase';
 
 const SECTION_OPTIONS = ['A', 'B', 'C', 'D', 'E', 'F'];
@@ -87,6 +89,7 @@ const AdminDashboard: React.FC = () => {
   const [teacherForm, setTeacherForm] = useState({
     employeeId: '',
     name: '',
+    designation: '',
     email: '',
     departmentId: isDeptAdmin ? user?.departmentId || 'CSE' : 'CSE',
     role: 'faculty' as 'faculty' | 'librarian' | 'accounts' | 'sports' | 'admin',
@@ -140,6 +143,20 @@ const AdminDashboard: React.FC = () => {
   const [assignmentsFetched, setAssignmentsFetched] = useState(false);
 
   const [noDueDialogOpen, setNoDueDialogOpen] = useState(false);
+  const [hallTicketDialogOpen, setHallTicketDialogOpen] = useState(false);
+  const [hallTicketLoading, setHallTicketLoading] = useState(false);
+  const [hallTicketCandidates, setHallTicketCandidates] = useState<Array<{
+    usn: string;
+    studentName: string;
+    semesterNumber: number;
+    section: string;
+    mentorApprovedAt: Date;
+  }>>([]);
+  const [hallTicketDepartment, setHallTicketDepartment] = useState(isSuperAdmin ? '' : user?.departmentId || '');
+  const [examDateDialogOpen, setExamDateDialogOpen] = useState(false);
+  const [examDateSemester, setExamDateSemester] = useState('1');
+  const [examDateLoading, setExamDateLoading] = useState(false);
+  const [examDateRows, setExamDateRows] = useState<Array<{ subjectCode: string; subjectName: string; examDate: string }>>([]);
   const [noDueForm, setNoDueForm] = useState<{
     departmentId: string;
     batchYear: string;
@@ -171,6 +188,65 @@ const AdminDashboard: React.FC = () => {
   const [teacherFilters, setTeacherFilters] = useState({ name: '', employeeId: '' });
   const [selectedStudent, setSelectedStudent] = useState<any | null>(null);
   const [studentDetailOpen, setStudentDetailOpen] = useState(false);
+  const [studentEditMode, setStudentEditMode] = useState(false);
+  const [studentSaving, setStudentSaving] = useState(false);
+  const [studentEditForm, setStudentEditForm] = useState({
+    name: '',
+    email: '',
+    dateOfBirth: '',
+    departmentId: '',
+    batchYear: '',
+    section: '',
+    mentorEmployeeId: '',
+  });
+  const [selectedTeacher, setSelectedTeacher] = useState<any | null>(null);
+  const [teacherDetailOpen, setTeacherDetailOpen] = useState(false);
+  const [teacherEditMode, setTeacherEditMode] = useState(false);
+  const [teacherSaving, setTeacherSaving] = useState(false);
+  const [teacherEditForm, setTeacherEditForm] = useState({
+    name: '',
+    designation: '',
+    email: '',
+    departmentId: '',
+    role: 'faculty' as 'faculty' | 'librarian' | 'accounts' | 'sports' | 'admin',
+  });
+  const [curriculumListOpen, setCurriculumListOpen] = useState(false);
+  const [curriculumLoading, setCurriculumLoading] = useState(false);
+  const [curriculumList, setCurriculumList] = useState<any[]>([]);
+  const [curriculumFilters, setCurriculumFilters] = useState({
+    departmentId: isSuperAdmin ? '' : user?.departmentId || '',
+    batchYear: '',
+    semesterNumber: 'all',
+    subjectCode: '',
+  });
+  const [curriculumEditOpen, setCurriculumEditOpen] = useState(false);
+  const [curriculumSaving, setCurriculumSaving] = useState(false);
+  const [curriculumEditForm, setCurriculumEditForm] = useState({
+    docId: '',
+    subjectName: '',
+    subjectType: 'core' as 'core' | 'open_elective',
+  });
+  const [mappingEditOpen, setMappingEditOpen] = useState(false);
+  const [mappingSaving, setMappingSaving] = useState(false);
+  const [mappingEditForm, setMappingEditForm] = useState({
+    departmentId: '',
+    batchYear: '',
+    semesterNumber: '',
+    section: '',
+    subjectCode: '',
+    teacherEmployeeId: '',
+  });
+  const [openElectiveEditOpen, setOpenElectiveEditOpen] = useState(false);
+  const [openElectiveSaving, setOpenElectiveSaving] = useState(false);
+  const [openElectiveEditForm, setOpenElectiveEditForm] = useState({
+    departmentId: '',
+    batchYear: '',
+    semesterNumber: '',
+    subjectCode: '',
+    section: '',
+    subjectName: '',
+    teacherEmployeeId: '',
+  });
   const [academicContext, setAcademicContext] = useState<AcademicContext | null>(null);
   const [academicContextError, setAcademicContextError] = useState<string | null>(null);
   const [contextForm, setContextForm] = useState<{ academicYear: string; semesterType: 'odd' | 'even' }>(
@@ -227,6 +303,269 @@ const AdminDashboard: React.FC = () => {
   }, [isSuperAdmin, user?.departmentId]);
 
   useEffect(() => {
+    if (!isSuperAdmin && user?.departmentId) {
+      setHallTicketDepartment(user.departmentId);
+    }
+  }, [isSuperAdmin, user?.departmentId]);
+
+  useEffect(() => {
+    if (selectedStudent && studentDetailOpen) {
+      setStudentEditForm({
+        name: selectedStudent.name || '',
+        email: selectedStudent.email || '',
+        dateOfBirth: selectedStudent.dateOfBirth || '',
+        departmentId: selectedStudent.departmentId || '',
+        batchYear: String(selectedStudent.batchYear || ''),
+        section: selectedStudent.section || '',
+        mentorEmployeeId: selectedStudent.mentorEmployeeId || '',
+      });
+    }
+  }, [selectedStudent, studentDetailOpen]);
+
+  useEffect(() => {
+    if (selectedTeacher && teacherDetailOpen) {
+      setTeacherEditForm({
+        name: selectedTeacher.name || '',
+        designation: selectedTeacher.designation || '',
+        email: selectedTeacher.email || '',
+        departmentId: selectedTeacher.departmentId || '',
+        role: selectedTeacher.role || 'faculty',
+      });
+    }
+  }, [selectedTeacher, teacherDetailOpen]);
+
+  const handleSaveStudent = async () => {
+    if (!selectedStudent) return;
+    try {
+      setStudentSaving(true);
+      const studentRef = doc(db, 'students', selectedStudent.usn);
+      await setDoc(
+        studentRef,
+        {
+          name: studentEditForm.name.trim(),
+          email: studentEditForm.email.trim(),
+          dateOfBirth: studentEditForm.dateOfBirth.trim(),
+          departmentId: studentEditForm.departmentId.trim(),
+          batchYear: parseInt(studentEditForm.batchYear, 10),
+          section: studentEditForm.section.trim().toUpperCase(),
+          mentorEmployeeId: studentEditForm.mentorEmployeeId.trim(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+      toast({ title: 'Student updated', description: 'Student details saved successfully.' });
+      setStudentEditMode(false);
+      await loadStudents();
+    } catch (error) {
+      console.error('Error updating student:', error);
+      toast({ title: 'Update failed', description: 'Could not update student details.', variant: 'destructive' });
+    } finally {
+      setStudentSaving(false);
+    }
+  };
+
+  const handleSaveTeacher = async () => {
+    if (!selectedTeacher) return;
+    try {
+      setTeacherSaving(true);
+      const teacherRef = doc(db, 'teachers', selectedTeacher.employeeId);
+      await setDoc(
+        teacherRef,
+        {
+          name: teacherEditForm.name.trim(),
+          designation: teacherEditForm.designation.trim(),
+          email: teacherEditForm.email.trim(),
+          departmentId: teacherEditForm.departmentId.trim(),
+          role: teacherEditForm.role,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+      toast({ title: 'Teacher updated', description: 'Teacher details saved successfully.' });
+      setTeacherEditMode(false);
+      await loadTeachers();
+    } catch (error) {
+      console.error('Error updating teacher:', error);
+      toast({ title: 'Update failed', description: 'Could not update teacher details.', variant: 'destructive' });
+    } finally {
+      setTeacherSaving(false);
+    }
+  };
+
+  const handleDeleteStudent = async () => {
+    if (!selectedStudent) return;
+    if (!window.confirm(`Delete student ${selectedStudent.usn}?`)) return;
+    try {
+      await deleteDoc(doc(db, 'students', selectedStudent.usn));
+      toast({ title: 'Student deleted', description: `${selectedStudent.usn} removed.` });
+      setStudentDetailOpen(false);
+      await loadStudents();
+    } catch (error) {
+      console.error('Error deleting student:', error);
+      toast({ title: 'Delete failed', description: 'Could not delete student.', variant: 'destructive' });
+    }
+  };
+
+  const handleDeleteTeacher = async () => {
+    if (!selectedTeacher) return;
+    if (!window.confirm(`Delete teacher ${selectedTeacher.employeeId}?`)) return;
+    try {
+      await deleteDoc(doc(db, 'teachers', selectedTeacher.employeeId));
+      toast({ title: 'Teacher deleted', description: `${selectedTeacher.employeeId} removed.` });
+      setTeacherDetailOpen(false);
+      await loadTeachers();
+    } catch (error) {
+      console.error('Error deleting teacher:', error);
+      toast({ title: 'Delete failed', description: 'Could not delete teacher.', variant: 'destructive' });
+    }
+  };
+
+  const loadCurriculumList = async () => {
+    try {
+      setCurriculumLoading(true);
+      const departmentScope = isSuperAdmin ? null : user?.departmentId;
+      const baseRef = collection(db, 'curriculum');
+      const baseQuery = departmentScope
+        ? query(baseRef, where('departmentId', '==', departmentScope))
+        : baseRef;
+      const snap = await getDocs(baseQuery);
+      const items = snap.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }));
+      const filtered = items.filter((item: any) => {
+        if (curriculumFilters.departmentId && item.departmentId !== curriculumFilters.departmentId) return false;
+        if (curriculumFilters.batchYear && String(item.batchYear) !== String(curriculumFilters.batchYear)) return false;
+        if (curriculumFilters.semesterNumber !== 'all' && String(item.semesterNumber) !== curriculumFilters.semesterNumber) return false;
+        if (curriculumFilters.subjectCode && !String(item.subjectCode || '').toUpperCase().includes(curriculumFilters.subjectCode.toUpperCase())) return false;
+        return true;
+      });
+      setCurriculumList(filtered);
+    } catch (error) {
+      console.error('Error loading curriculum list:', error);
+      toast({ title: 'Failed to load curriculum', description: 'Please try again.', variant: 'destructive' });
+    } finally {
+      setCurriculumLoading(false);
+    }
+  };
+
+  const handleSaveCurriculum = async () => {
+    if (!curriculumEditForm.docId) return;
+    try {
+      setCurriculumSaving(true);
+      await setDoc(
+        doc(db, 'curriculum', curriculumEditForm.docId),
+        {
+          subjectName: curriculumEditForm.subjectName.trim(),
+          subjectType: curriculumEditForm.subjectType,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+      toast({ title: 'Curriculum updated', description: 'Subject details saved successfully.' });
+      setCurriculumEditOpen(false);
+      await loadCurriculumList();
+    } catch (error) {
+      console.error('Error updating curriculum:', error);
+      toast({ title: 'Update failed', description: 'Could not update curriculum.', variant: 'destructive' });
+    } finally {
+      setCurriculumSaving(false);
+    }
+  };
+
+  const handleSaveMapping = async () => {
+    const { departmentId, batchYear, semesterNumber, section, subjectCode, teacherEmployeeId } = mappingEditForm;
+    if (!departmentId || !batchYear || !semesterNumber || !section || !subjectCode) return;
+    try {
+      setMappingSaving(true);
+      const docId = `${departmentId}_${batchYear}_${semesterNumber}_${section}_${subjectCode}`;
+      await setDoc(
+        doc(db, 'core_subject_teacher_mapping', docId),
+        {
+          departmentId,
+          batchYear: parseInt(batchYear, 10),
+          semesterNumber: parseInt(semesterNumber, 10),
+          section,
+          subjectCode,
+          teacherEmployeeId: teacherEmployeeId.trim(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+      toast({ title: 'Mapping updated', description: 'Teacher assignment saved.' });
+      setMappingEditOpen(false);
+      await loadTeacherAssignments();
+    } catch (error) {
+      console.error('Error updating mapping:', error);
+      toast({ title: 'Update failed', description: 'Could not update mapping.', variant: 'destructive' });
+    } finally {
+      setMappingSaving(false);
+    }
+  };
+
+  const handleSaveOpenElectiveOffering = async () => {
+    const { departmentId, batchYear, semesterNumber, subjectCode, section, subjectName, teacherEmployeeId } = openElectiveEditForm;
+    if (!departmentId || !batchYear || !semesterNumber || !subjectCode) return;
+    try {
+      setOpenElectiveSaving(true);
+      const docId = `${departmentId}_${batchYear}_${semesterNumber}_${subjectCode}`;
+      await setDoc(
+        doc(db, 'open_elective_offerings', docId),
+        {
+          departmentId,
+          batchYear: parseInt(batchYear, 10),
+          semesterNumber: parseInt(semesterNumber, 10),
+          subjectCode,
+          section: section.trim().toUpperCase() || 'ALL',
+          subjectName: subjectName.trim(),
+          teacherEmployeeId: teacherEmployeeId.trim(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+      toast({ title: 'Open elective updated', description: 'Open elective offering saved.' });
+      setOpenElectiveEditOpen(false);
+      await loadTeacherAssignments();
+    } catch (error) {
+      console.error('Error updating open elective:', error);
+      toast({ title: 'Update failed', description: 'Could not update open elective.', variant: 'destructive' });
+    } finally {
+      setOpenElectiveSaving(false);
+    }
+  };
+
+  const handleDeleteCoreMapping = async (row: SubjectAssignmentRow) => {
+    const departmentId = assignmentFilters.departmentId || user?.departmentId || '';
+    const batchYear = assignmentFilters.batchYear;
+    const semesterNumber = assignmentFilters.semesterNumber;
+    if (!departmentId || !batchYear || !semesterNumber) return;
+    if (!window.confirm(`Delete mapping for ${row.subjectCode} (Section ${row.section})?`)) return;
+    try {
+      const docId = `${departmentId}_${batchYear}_${semesterNumber}_${row.section}_${row.subjectCode}`;
+      await deleteDoc(doc(db, 'core_subject_teacher_mapping', docId));
+      toast({ title: 'Mapping deleted', description: `${row.subjectCode} section ${row.section} removed.` });
+      await loadTeacherAssignments();
+    } catch (error) {
+      console.error('Error deleting mapping:', error);
+      toast({ title: 'Delete failed', description: 'Could not delete mapping.', variant: 'destructive' });
+    }
+  };
+
+  const handleDeleteOpenElectiveOffering = async (row: SubjectAssignmentRow) => {
+    const departmentId = assignmentFilters.departmentId || user?.departmentId || '';
+    const batchYear = assignmentFilters.batchYear;
+    const semesterNumber = assignmentFilters.semesterNumber;
+    if (!departmentId || !batchYear || !semesterNumber) return;
+    if (!window.confirm(`Delete open elective ${row.subjectCode}?`)) return;
+    try {
+      const docId = `${departmentId}_${batchYear}_${semesterNumber}_${row.subjectCode}`;
+      await deleteDoc(doc(db, 'open_elective_offerings', docId));
+      toast({ title: 'Open elective deleted', description: `${row.subjectCode} removed.` });
+      await loadTeacherAssignments();
+    } catch (error) {
+      console.error('Error deleting open elective:', error);
+      toast({ title: 'Delete failed', description: 'Could not delete open elective.', variant: 'destructive' });
+    }
+  };
+
+  useEffect(() => {
     if (!user) {
       return;
     }
@@ -260,7 +599,7 @@ const AdminDashboard: React.FC = () => {
     }, handleSnapshotError));
 
     const teachersRef = collection(db, 'teachers');
-    const teachersQuery = departmentScope ? query(teachersRef, where('departmentId', '==', departmentScope)) : teachersRef;
+    const teachersQuery = teachersRef;
     unsubscribers.push(onSnapshot(teachersQuery, (snapshot) => {
       teachersReady = true;
       setEntityCounts((prev) => ({ ...prev, teachers: snapshot.size }));
@@ -318,15 +657,10 @@ const AdminDashboard: React.FC = () => {
     setListError(null);
     try {
       const teachersRef = collection(db, 'teachers');
-      const teachersQuery = departmentScope
-        ? query(teachersRef, where('departmentId', '==', departmentScope))
-        : query(teachersRef, orderBy('employeeId'));
+      const teachersQuery = query(teachersRef, orderBy('employeeId'));
       const snapshot = await getDocs(teachersQuery);
-      const records = snapshot.docs.map((doc) => ({ id: doc.id, ...(doc.data() as any) }));
-      const sorted = departmentScope
-        ? [...records].sort((a, b) => a.employeeId.localeCompare(b.employeeId))
-        : records;
-      setTeacherList(sorted);
+      const records = snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() as any) }));
+      setTeacherList(records);
     } catch (error) {
       console.error('Error loading teachers:', error);
       setListError('Unable to load teacher records.');
@@ -616,6 +950,7 @@ const AdminDashboard: React.FC = () => {
       setTeacherForm({
         employeeId: '',
         name: '',
+        designation: '',
         email: '',
         departmentId: user?.departmentId || 'CSE',
         role: 'faculty',
@@ -858,6 +1193,165 @@ const AdminDashboard: React.FC = () => {
     } finally {
       setOpenElectiveSubmitting(false);
     }
+  };
+
+  const loadHallTicketCandidates = async () => {
+    const departmentId = isSuperAdmin ? hallTicketDepartment : user?.departmentId;
+    if (!departmentId) {
+      toast({
+        title: 'Select a department',
+        description: 'Choose a department to load hall ticket candidates.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    try {
+      setHallTicketLoading(true);
+      const data = await getStudentsReadyForHallTicket(departmentId);
+      setHallTicketCandidates(data);
+    } catch (error) {
+      console.error('Error loading hall ticket candidates:', error);
+      toast({ title: 'Failed to load hall tickets', description: 'Please try again.', variant: 'destructive' });
+    } finally {
+      setHallTicketLoading(false);
+    }
+  };
+
+  const handleGenerateHallTicket = async (usn: string) => {
+    try {
+      const adminId = (user as any)?.adminId || user?.uid || user?.email || 'admin';
+      await downloadHallTicket(usn, adminId);
+      await loadHallTicketCandidates();
+      toast({ title: 'Hall ticket generated', description: `Downloaded hall ticket for ${usn}.` });
+    } catch (error: any) {
+      console.error('Hall ticket generation error:', error);
+      toast({ title: 'Generation failed', description: error?.message || 'Unable to generate hall ticket.', variant: 'destructive' });
+    }
+  };
+
+  const loadExamDates = async () => {
+    const departmentId = isSuperAdmin ? hallTicketDepartment : user?.departmentId;
+    if (!departmentId) {
+      toast({
+        title: 'Select a department',
+        description: 'Choose a department before loading exam dates.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const semesterNumber = parseInt(examDateSemester, 10);
+    if (Number.isNaN(semesterNumber)) {
+      toast({
+        title: 'Invalid semester',
+        description: 'Choose a valid semester.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      setExamDateLoading(true);
+      const curriculumQuery = query(
+        collection(db, 'curriculum'),
+        where('departmentId', '==', departmentId),
+        where('semesterNumber', '==', semesterNumber)
+      );
+      const curriculumSnap = await getDocs(curriculumQuery);
+      const subjects = curriculumSnap.docs.map((docSnap) => docSnap.data() as any);
+
+      const scheduleQuery = query(
+        collection(db, 'exam_schedule'),
+        where('departmentId', '==', departmentId),
+        where('semesterNumber', '==', semesterNumber)
+      );
+      const scheduleSnap = await getDocs(scheduleQuery);
+      const scheduleMap = new Map<string, string>();
+      scheduleSnap.docs.forEach((docSnap) => {
+        const data = docSnap.data() as any;
+        if (data.subjectCode) {
+          scheduleMap.set(String(data.subjectCode).toUpperCase(), normalizeExamDate(data.examDate || ''));
+        }
+      });
+
+      const rows = subjects
+        .map((subject) => ({
+          subjectCode: subject.subjectCode,
+          subjectName: subject.subjectName || subject.subjectCode,
+          examDate: scheduleMap.get(String(subject.subjectCode).toUpperCase()) || '',
+        }))
+        .sort((a, b) => a.subjectCode.localeCompare(b.subjectCode));
+
+      setExamDateRows(rows);
+    } catch (error) {
+      console.error('Error loading exam dates:', error);
+      toast({ title: 'Failed to load exam dates', description: 'Please try again.', variant: 'destructive' });
+    } finally {
+      setExamDateLoading(false);
+    }
+  };
+
+  const handleSaveExamDates = async () => {
+    const departmentId = isSuperAdmin ? hallTicketDepartment : user?.departmentId;
+    if (!departmentId) {
+      toast({
+        title: 'Select a department',
+        description: 'Choose a department before saving exam dates.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    const semesterNumber = parseInt(examDateSemester, 10);
+    if (Number.isNaN(semesterNumber)) {
+      toast({
+        title: 'Invalid semester',
+        description: 'Choose a valid semester.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      setExamDateLoading(true);
+      await Promise.all(
+        examDateRows.map((row) => {
+          const docId = `${departmentId}_${semesterNumber}_${row.subjectCode}`;
+          return setDoc(
+            doc(db, 'exam_schedule', docId),
+            {
+              departmentId,
+              semesterNumber,
+              subjectCode: row.subjectCode,
+              examDate: normalizeExamDate(row.examDate || ''),
+              updatedAt: serverTimestamp(),
+              updatedBy: (user as any)?.adminId || user?.uid || user?.email || 'admin',
+            },
+            { merge: true }
+          );
+        })
+      );
+      toast({ title: 'Exam dates saved', description: 'Schedule updated successfully.' });
+      setExamDateDialogOpen(false);
+    } catch (error) {
+      console.error('Error saving exam dates:', error);
+      toast({ title: 'Save failed', description: 'Could not save exam dates.', variant: 'destructive' });
+    } finally {
+      setExamDateLoading(false);
+    }
+  };
+
+  const normalizeExamDate = (value: string): string => {
+    if (!value) return '';
+    if (value.includes('-')) return value;
+    if (value.includes('/')) {
+      const [dd, mm, yyyy] = value.split('/');
+      if (yyyy && mm && dd) {
+        const mmNorm = mm.padStart(2, '0');
+        const ddNorm = dd.padStart(2, '0');
+        return `${yyyy}-${mmNorm}-${ddNorm}`;
+      }
+    }
+    return value;
   };
 
   const loadTeacherAssignments = async () => {
@@ -1132,7 +1626,9 @@ const AdminDashboard: React.FC = () => {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <Shield className="h-10 w-10 text-orange-600" />
-                <span className="text-3xl font-bold text-orange-600">0</span>
+                <span className="text-3xl font-bold text-orange-600">
+                  {hallTicketCandidates.length}
+                </span>
               </div>
               <CardTitle className="mt-4">Hall Tickets</CardTitle>
               <CardDescription>
@@ -1140,7 +1636,10 @@ const AdminDashboard: React.FC = () => {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <Button className="w-full" variant="outline">
+              <Button className="w-full" variant="outline" onClick={() => {
+                setHallTicketDialogOpen(true);
+                loadHallTicketCandidates();
+              }}>
                 Generate Tickets
               </Button>
             </CardContent>
@@ -1196,6 +1695,30 @@ const AdminDashboard: React.FC = () => {
             <CardContent>
               <Button className="w-full" variant="outline" onClick={() => setAssignmentDialogOpen(true)}>
                 View Assignments
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card className="hover:shadow-lg transition-shadow cursor-pointer border-l-4 border-l-indigo-500">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <BookOpen className="h-10 w-10 text-indigo-600" />
+              </div>
+              <CardTitle className="mt-4">Curriculum Catalog</CardTitle>
+              <CardDescription>
+                View and edit curriculum subjects
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button
+                className="w-full"
+                variant="outline"
+                onClick={() => {
+                  setCurriculumListOpen(true);
+                  loadCurriculumList();
+                }}
+              >
+                View Curriculum
               </Button>
             </CardContent>
           </Card>
@@ -1360,6 +1883,7 @@ const AdminDashboard: React.FC = () => {
                   <tr>
                     <th className="px-4 py-3">Employee ID</th>
                     <th className="px-4 py-3">Name</th>
+                    <th className="px-4 py-3">Designation</th>
                     <th className="px-4 py-3">Role</th>
                     {isSuperAdmin && <th className="px-4 py-3">Department</th>}
                     <th className="px-4 py-3">Email</th>
@@ -1368,24 +1892,361 @@ const AdminDashboard: React.FC = () => {
                 <tbody>
                   {listLoading.teachers ? (
                     <tr>
-                      <td colSpan={isSuperAdmin ? 5 : 4} className="px-4 py-6 text-center text-muted-foreground">
+                      <td colSpan={isSuperAdmin ? 6 : 5} className="px-4 py-6 text-center text-muted-foreground">
                         Loading teachers...
                       </td>
                     </tr>
                   ) : filteredTeacherList.length === 0 ? (
                     <tr>
-                      <td colSpan={isSuperAdmin ? 5 : 4} className="px-4 py-6 text-center text-muted-foreground">
+                      <td colSpan={isSuperAdmin ? 6 : 5} className="px-4 py-6 text-center text-muted-foreground">
                         No teachers match the filters.
                       </td>
                     </tr>
                   ) : (
                     filteredTeacherList.map((teacher) => (
-                      <tr key={teacher.id} className="border-t">
+                      <tr
+                        key={teacher.id}
+                        className="border-t hover:bg-blue-50/50 cursor-pointer"
+                        onClick={() => {
+                          setSelectedTeacher(teacher);
+                          setTeacherDetailOpen(true);
+                        }}
+                      >
                         <td className="px-4 py-3 font-mono text-xs uppercase">{teacher.employeeId}</td>
-                        <td className="px-4 py-3">{teacher.name}</td>
+                        <td className="px-4 py-3 text-blue-700 hover:underline">{teacher.name}</td>
+                        <td className="px-4 py-3">{teacher.designation || '-'}</td>
                         <td className="px-4 py-3 capitalize">{teacher.role}</td>
                         {isSuperAdmin && <td className="px-4 py-3">{teacher.departmentId}</td>}
                         <td className="px-4 py-3 truncate max-w-[180px]">{teacher.email}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={hallTicketDialogOpen} onOpenChange={setHallTicketDialogOpen}>
+          <DialogContent className="max-w-4xl">
+            <DialogHeader>
+              <DialogTitle>Hall Ticket Generation</DialogTitle>
+              <DialogDescription>Generate hall tickets for mentor-approved students.</DialogDescription>
+            </DialogHeader>
+            <div className="flex flex-wrap gap-3 pb-4">
+              {isSuperAdmin ? (
+                <Select value={hallTicketDepartment} onValueChange={setHallTicketDepartment}>
+                  <SelectTrigger className="w-full md:w-[200px]">
+                    <SelectValue placeholder="Select department" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {departments.filter((dept) => dept !== 'ALL').map((dept) => (
+                      <SelectItem key={dept} value={dept}>
+                        {dept}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input value={user?.departmentId || 'N/A'} disabled className="w-full md:w-[200px] bg-gray-100" />
+              )}
+              <div className="flex-1" />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setExamDateDialogOpen(true);
+                  loadExamDates();
+                }}
+              >
+                Edit Exam Dates
+              </Button>
+              <Button size="sm" variant="outline" onClick={loadHallTicketCandidates} disabled={hallTicketLoading}>
+                {hallTicketLoading ? 'Refreshing...' : 'Refresh'}
+              </Button>
+            </div>
+            <div className="overflow-x-auto max-h-[60vh] border rounded-lg">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-50 text-left text-xs font-semibold uppercase tracking-wider text-gray-600">
+                  <tr>
+                    <th className="px-4 py-3">USN</th>
+                    <th className="px-4 py-3">Student</th>
+                    <th className="px-4 py-3">Semester</th>
+                    <th className="px-4 py-3">Section</th>
+                    <th className="px-4 py-3">Mentor Approved</th>
+                    <th className="px-4 py-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {hallTicketLoading ? (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
+                        Loading candidates...
+                      </td>
+                    </tr>
+                  ) : hallTicketCandidates.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
+                        No mentor-approved students waiting for hall tickets.
+                      </td>
+                    </tr>
+                  ) : (
+                    hallTicketCandidates.map((candidate) => (
+                      <tr key={candidate.usn} className="border-t">
+                        <td className="px-4 py-3 font-mono text-xs uppercase">{candidate.usn}</td>
+                        <td className="px-4 py-3 font-medium">{candidate.studentName}</td>
+                        <td className="px-4 py-3">{candidate.semesterNumber}</td>
+                        <td className="px-4 py-3">{candidate.section}</td>
+                        <td className="px-4 py-3 text-xs">
+                          {candidate.mentorApprovedAt ? candidate.mentorApprovedAt.toLocaleDateString('en-IN') : '-'}
+                        </td>
+                        <td className="px-4 py-3">
+                          <Button size="sm" onClick={() => handleGenerateHallTicket(candidate.usn)}>
+                            Generate PDF
+                          </Button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={examDateDialogOpen} onOpenChange={setExamDateDialogOpen}>
+          <DialogContent className="max-w-4xl">
+            <DialogHeader>
+              <DialogTitle>Exam Schedule</DialogTitle>
+              <DialogDescription>Set exam dates per subject. Leave blank if not scheduled.</DialogDescription>
+            </DialogHeader>
+            <div className="flex flex-wrap gap-3 pb-4">
+              {isSuperAdmin ? (
+                <Select value={hallTicketDepartment} onValueChange={setHallTicketDepartment}>
+                  <SelectTrigger className="w-full md:w-[200px]">
+                    <SelectValue placeholder="Select department" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {departments.filter((dept) => dept !== 'ALL').map((dept) => (
+                      <SelectItem key={dept} value={dept}>
+                        {dept}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input value={user?.departmentId || 'N/A'} disabled className="w-full md:w-[200px] bg-gray-100" />
+              )}
+              <Select value={examDateSemester} onValueChange={setExamDateSemester}>
+                <SelectTrigger className="w-full md:w-[160px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SEMESTER_OPTIONS.map((sem) => (
+                    <SelectItem key={sem} value={String(sem)}>
+                      Semester {sem}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="flex-1" />
+              <Button size="sm" variant="outline" onClick={loadExamDates} disabled={examDateLoading}>
+                {examDateLoading ? 'Loading...' : 'Load'}
+              </Button>
+            </div>
+            <div className="overflow-x-auto max-h-[60vh] border rounded-lg">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-50 text-left text-xs font-semibold uppercase tracking-wider text-gray-600">
+                  <tr>
+                    <th className="px-4 py-3">Subject Code</th>
+                    <th className="px-4 py-3">Subject Name</th>
+                    <th className="px-4 py-3">Exam Date (optional)</th>
+                    <th className="px-4 py-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {examDateLoading ? (
+                    <tr>
+                      <td colSpan={4} className="px-4 py-6 text-center text-muted-foreground">
+                        Loading exam dates...
+                      </td>
+                    </tr>
+                  ) : examDateRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="px-4 py-6 text-center text-muted-foreground">
+                        No subjects found for this semester.
+                      </td>
+                    </tr>
+                  ) : (
+                    examDateRows.map((row, index) => (
+                      <tr key={row.subjectCode} className="border-t">
+                        <td className="px-4 py-3 font-mono text-xs uppercase">{row.subjectCode}</td>
+                        <td className="px-4 py-3 font-medium">{row.subjectName}</td>
+                        <td className="px-4 py-3">
+                          <Input
+                            type="date"
+                            value={row.examDate || ''}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              setExamDateRows((prev) => {
+                                const next = [...prev];
+                                next[index] = { ...next[index], examDate: value };
+                                return next;
+                              });
+                            }}
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-muted-foreground"
+                            onClick={() => {
+                              setExamDateRows((prev) => {
+                                const next = [...prev];
+                                next[index] = { ...next[index], examDate: '' };
+                                return next;
+                              });
+                            }}
+                          >
+                            Clear
+                          </Button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex justify-end gap-2 pt-4">
+              <Button variant="outline" onClick={() => setExamDateDialogOpen(false)} disabled={examDateLoading}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveExamDates} disabled={examDateLoading}>
+                {examDateLoading ? 'Saving...' : 'Save Dates'}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={curriculumListOpen}
+          onOpenChange={(open) => {
+            setCurriculumListOpen(open);
+            if (!open) {
+              setCurriculumList([]);
+            }
+          }}
+        >
+          <DialogContent className="max-w-4xl">
+            <DialogHeader>
+              <DialogTitle>Curriculum Catalog</DialogTitle>
+              <DialogDescription>View and update subjects in the curriculum.</DialogDescription>
+            </DialogHeader>
+            <div className="flex flex-wrap gap-3 pb-4">
+              {isSuperAdmin ? (
+                <Select
+                  value={curriculumFilters.departmentId}
+                  onValueChange={(value) => setCurriculumFilters((prev) => ({ ...prev, departmentId: value }))}
+                >
+                  <SelectTrigger className="w-full md:w-[200px]">
+                    <SelectValue placeholder="Department" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {departments.filter((dept) => dept !== 'ALL').map((dept) => (
+                      <SelectItem key={dept} value={dept}>
+                        {dept}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input value={user?.departmentId || 'N/A'} disabled className="w-full md:w-[200px] bg-gray-100" />
+              )}
+              <Input
+                placeholder="Batch year"
+                value={curriculumFilters.batchYear}
+                onChange={(e) => setCurriculumFilters((prev) => ({ ...prev, batchYear: e.target.value }))}
+                className="w-full md:w-[140px]"
+              />
+              <Select
+                value={curriculumFilters.semesterNumber}
+                onValueChange={(value) => setCurriculumFilters((prev) => ({ ...prev, semesterNumber: value }))}
+              >
+                <SelectTrigger className="w-full md:w-[160px]">
+                  <SelectValue placeholder="Semester" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Semesters</SelectItem>
+                  {SEMESTER_OPTIONS.map((sem) => (
+                    <SelectItem key={sem} value={String(sem)}>
+                      Semester {sem}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Input
+                placeholder="Subject code"
+                value={curriculumFilters.subjectCode}
+                onChange={(e) => setCurriculumFilters((prev) => ({ ...prev, subjectCode: e.target.value }))}
+                className="w-full md:w-[180px]"
+              />
+              <div className="flex-1" />
+              <Button size="sm" variant="outline" onClick={loadCurriculumList} disabled={curriculumLoading}>
+                {curriculumLoading ? 'Refreshing...' : 'Refresh'}
+              </Button>
+            </div>
+            <div className="overflow-x-auto max-h-[60vh] border rounded-lg">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-50 text-left text-xs font-semibold uppercase tracking-wider text-gray-600">
+                  <tr>
+                    <th className="px-4 py-3">Code</th>
+                    <th className="px-4 py-3">Name</th>
+                    <th className="px-4 py-3">Type</th>
+                    <th className="px-4 py-3">Department</th>
+                    <th className="px-4 py-3">Batch</th>
+                    <th className="px-4 py-3">Semester</th>
+                    <th className="px-4 py-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {curriculumLoading ? (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-6 text-center text-muted-foreground">
+                        Loading curriculum...
+                      </td>
+                    </tr>
+                  ) : curriculumList.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-6 text-center text-muted-foreground">
+                        No curriculum entries found.
+                      </td>
+                    </tr>
+                  ) : (
+                    curriculumList.map((item) => (
+                      <tr key={item.id} className="border-t">
+                        <td className="px-4 py-3 font-mono text-xs uppercase">{item.subjectCode}</td>
+                        <td className="px-4 py-3 font-medium">{item.subjectName}</td>
+                        <td className="px-4 py-3 capitalize">{item.subjectType}</td>
+                        <td className="px-4 py-3">{item.departmentId}</td>
+                        <td className="px-4 py-3">{item.batchYear}</td>
+                        <td className="px-4 py-3">{item.semesterNumber}</td>
+                        <td className="px-4 py-3">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setCurriculumEditForm({
+                                docId: item.id,
+                                subjectName: item.subjectName || '',
+                                subjectType: item.subjectType || 'core',
+                              });
+                              setCurriculumEditOpen(true);
+                            }}
+                          >
+                            Edit
+                          </Button>
+                        </td>
                       </tr>
                     ))
                   )}
@@ -1504,6 +2365,7 @@ const AdminDashboard: React.FC = () => {
                             <th className="px-4 py-3">Code</th>
                             <th className="px-4 py-3">Section</th>
                             <th className="px-4 py-3">Teacher</th>
+                            <th className="px-4 py-3">Actions</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1515,6 +2377,33 @@ const AdminDashboard: React.FC = () => {
                               <td className="px-4 py-3">
                                 <span className="font-medium">{row.teacherName}</span>
                                 <span className="ml-2 text-xs text-muted-foreground">{row.teacherEmployeeId}</span>
+                              </td>
+                              <td className="px-4 py-3">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setMappingEditForm({
+                                      departmentId: assignmentFilters.departmentId || user?.departmentId || '',
+                                      batchYear: assignmentFilters.batchYear,
+                                      semesterNumber: assignmentFilters.semesterNumber,
+                                      section: row.section,
+                                      subjectCode: row.subjectCode,
+                                      teacherEmployeeId: row.teacherEmployeeId,
+                                    });
+                                    setMappingEditOpen(true);
+                                  }}
+                                >
+                                  Edit
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="ml-2 text-red-600 hover:text-red-700"
+                                  onClick={() => handleDeleteCoreMapping(row)}
+                                >
+                                  Delete
+                                </Button>
                               </td>
                             </tr>
                           ))}
@@ -1539,7 +2428,9 @@ const AdminDashboard: React.FC = () => {
                           <tr>
                             <th className="px-4 py-3">Subject Name</th>
                             <th className="px-4 py-3">Code</th>
+                            <th className="px-4 py-3">Section</th>
                             <th className="px-4 py-3">Teacher</th>
+                            <th className="px-4 py-3">Actions</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1547,9 +2438,38 @@ const AdminDashboard: React.FC = () => {
                             <tr key={row.subjectCode} className="border-t">
                               <td className="px-4 py-3 font-medium">{row.subjectName}</td>
                               <td className="px-4 py-3 font-mono text-xs uppercase">{row.subjectCode}</td>
+                              <td className="px-4 py-3">{row.section || '—'}</td>
                               <td className="px-4 py-3">
                                 <span className="font-medium">{row.teacherName}</span>
                                 <span className="ml-2 text-xs text-muted-foreground">{row.teacherEmployeeId}</span>
+                              </td>
+                              <td className="px-4 py-3">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setOpenElectiveEditForm({
+                                      departmentId: assignmentFilters.departmentId || user?.departmentId || '',
+                                      batchYear: assignmentFilters.batchYear,
+                                      semesterNumber: assignmentFilters.semesterNumber,
+                                      subjectCode: row.subjectCode,
+                                      section: row.section || '',
+                                      subjectName: row.subjectName,
+                                      teacherEmployeeId: row.teacherEmployeeId,
+                                    });
+                                    setOpenElectiveEditOpen(true);
+                                  }}
+                                >
+                                  Edit
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="ml-2 text-red-600 hover:text-red-700"
+                                  onClick={() => handleDeleteOpenElectiveOffering(row)}
+                                >
+                                  Delete
+                                </Button>
                               </td>
                             </tr>
                           ))}
@@ -1563,10 +2483,129 @@ const AdminDashboard: React.FC = () => {
           </DialogContent>
         </Dialog>
 
+        <Dialog open={curriculumEditOpen} onOpenChange={setCurriculumEditOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Edit Curriculum Subject</DialogTitle>
+              <DialogDescription>Update the subject name or type.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3">
+              <div className="space-y-2">
+                <Label>Subject Name</Label>
+                <Input
+                  value={curriculumEditForm.subjectName}
+                  onChange={(e) => setCurriculumEditForm((prev) => ({ ...prev, subjectName: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Subject Type</Label>
+                <Select
+                  value={curriculumEditForm.subjectType}
+                  onValueChange={(value) => setCurriculumEditForm((prev) => ({ ...prev, subjectType: value as typeof curriculumEditForm.subjectType }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="core">core</SelectItem>
+                    <SelectItem value="open_elective">open_elective</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setCurriculumEditOpen(false)} disabled={curriculumSaving}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveCurriculum} disabled={curriculumSaving}>
+                {curriculumSaving ? 'Saving...' : 'Save'}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={mappingEditOpen} onOpenChange={setMappingEditOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Edit Core Subject Mapping</DialogTitle>
+              <DialogDescription>Update the assigned teacher for this subject.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <p className="text-xs text-muted-foreground">Subject Code</p>
+                  <p className="font-medium">{mappingEditForm.subjectCode}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Section</p>
+                  <p className="font-medium">{mappingEditForm.section}</p>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>Teacher Employee ID</Label>
+                <Input
+                  value={mappingEditForm.teacherEmployeeId}
+                  onChange={(e) => setMappingEditForm((prev) => ({ ...prev, teacherEmployeeId: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setMappingEditOpen(false)} disabled={mappingSaving}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveMapping} disabled={mappingSaving}>
+                {mappingSaving ? 'Saving...' : 'Save'}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={openElectiveEditOpen} onOpenChange={setOpenElectiveEditOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Edit Open Elective Offering</DialogTitle>
+              <DialogDescription>Update subject name or assigned teacher.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3">
+              <div className="space-y-2">
+                <Label>Subject Name</Label>
+                <Input
+                  value={openElectiveEditForm.subjectName}
+                  onChange={(e) => setOpenElectiveEditForm((prev) => ({ ...prev, subjectName: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Section</Label>
+                <Input
+                  value={openElectiveEditForm.section}
+                  onChange={(e) => setOpenElectiveEditForm((prev) => ({ ...prev, section: e.target.value }))}
+                  placeholder="A / B / ALL"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Teacher Employee ID</Label>
+                <Input
+                  value={openElectiveEditForm.teacherEmployeeId}
+                  onChange={(e) => setOpenElectiveEditForm((prev) => ({ ...prev, teacherEmployeeId: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setOpenElectiveEditOpen(false)} disabled={openElectiveSaving}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveOpenElectiveOffering} disabled={openElectiveSaving}>
+                {openElectiveSaving ? 'Saving...' : 'Save'}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
         <Dialog open={studentDetailOpen} onOpenChange={(open) => {
           setStudentDetailOpen(open);
           if (!open) {
             setSelectedStudent(null);
+            setStudentEditMode(false);
           }
         }}>
           <DialogContent className="max-w-lg">
@@ -1578,20 +2617,66 @@ const AdminDashboard: React.FC = () => {
             </DialogHeader>
             {selectedStudent ? (
               <div className="space-y-4 text-sm">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-muted-foreground">Edit student details</p>
+                  <div className="flex gap-2">
+                    {studentEditMode ? (
+                      <>
+                        <Button size="sm" variant="outline" onClick={() => setStudentEditMode(false)} disabled={studentSaving}>
+                          Cancel
+                        </Button>
+                        <Button size="sm" onClick={handleSaveStudent} disabled={studentSaving}>
+                          {studentSaving ? 'Saving...' : 'Save'}
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button size="sm" variant="outline" onClick={() => setStudentEditMode(true)}>
+                          Edit
+                        </Button>
+                        <Button size="sm" variant="destructive" onClick={handleDeleteStudent}>
+                          Delete
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <p className="text-xs text-muted-foreground">Email</p>
-                    <p className="font-medium break-all">{selectedStudent.email || 'Not provided'}</p>
+                    {studentEditMode ? (
+                      <Input
+                        value={studentEditForm.email}
+                        onChange={(e) => setStudentEditForm((prev) => ({ ...prev, email: e.target.value }))}
+                      />
+                    ) : (
+                      <p className="font-medium break-all">{selectedStudent.email || 'Not provided'}</p>
+                    )}
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Mentor ID</p>
-                    <p className="font-medium">{selectedStudent.mentorEmployeeId || 'Not assigned'}</p>
+                    {studentEditMode ? (
+                      <Input
+                        value={studentEditForm.mentorEmployeeId}
+                        onChange={(e) => setStudentEditForm((prev) => ({ ...prev, mentorEmployeeId: e.target.value }))}
+                      />
+                    ) : (
+                      <p className="font-medium">{selectedStudent.mentorEmployeeId || 'Not assigned'}</p>
+                    )}
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <p className="text-xs text-muted-foreground">Date of Birth</p>
-                    <p className="font-medium">{selectedStudent.dateOfBirth || '—'}</p>
+                    {studentEditMode ? (
+                      <Input
+                        value={studentEditForm.dateOfBirth}
+                        onChange={(e) => setStudentEditForm((prev) => ({ ...prev, dateOfBirth: e.target.value }))}
+                        placeholder="YYYY-MM-DD"
+                      />
+                    ) : (
+                      <p className="font-medium">{selectedStudent.dateOfBirth || '—'}</p>
+                    )}
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Semester</p>
@@ -1601,17 +2686,65 @@ const AdminDashboard: React.FC = () => {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <p className="text-xs text-muted-foreground">Batch Year</p>
-                    <p className="font-medium">{selectedStudent.batchYear}</p>
+                    {studentEditMode ? (
+                      <Input
+                        type="number"
+                        value={studentEditForm.batchYear}
+                        onChange={(e) => setStudentEditForm((prev) => ({ ...prev, batchYear: e.target.value }))}
+                      />
+                    ) : (
+                      <p className="font-medium">{selectedStudent.batchYear}</p>
+                    )}
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Section</p>
-                    <p className="font-medium">{selectedStudent.section}</p>
+                    {studentEditMode ? (
+                      <Select
+                        value={studentEditForm.section}
+                        onValueChange={(value) => setStudentEditForm((prev) => ({ ...prev, section: value }))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select section" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {SECTION_OPTIONS.map((section) => (
+                            <SelectItem key={section} value={section}>
+                              Section {section}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <p className="font-medium">{selectedStudent.section}</p>
+                    )}
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <p className="text-xs text-muted-foreground">Department</p>
-                    <p className="font-medium">{selectedStudent.departmentId}</p>
+                    {studentEditMode ? (
+                      isSuperAdmin ? (
+                        <Select
+                          value={studentEditForm.departmentId}
+                          onValueChange={(value) => setStudentEditForm((prev) => ({ ...prev, departmentId: value }))}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select department" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {departments.filter((dept) => dept !== 'ALL').map((dept) => (
+                              <SelectItem key={dept} value={dept}>
+                                {dept}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <Input value={studentEditForm.departmentId} disabled className="bg-gray-100" />
+                      )
+                    ) : (
+                      <p className="font-medium">{selectedStudent.departmentId}</p>
+                    )}
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Status</p>
@@ -1621,6 +2754,144 @@ const AdminDashboard: React.FC = () => {
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">Select a student to view details.</p>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={teacherDetailOpen} onOpenChange={(open) => {
+          setTeacherDetailOpen(open);
+          if (!open) {
+            setSelectedTeacher(null);
+            setTeacherEditMode(false);
+          }
+        }}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>{selectedTeacher?.name || 'Teacher Details'}</DialogTitle>
+              <DialogDescription>
+                {selectedTeacher?.employeeId}
+              </DialogDescription>
+            </DialogHeader>
+            {selectedTeacher ? (
+              <div className="space-y-4 text-sm">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-muted-foreground">Edit teacher details</p>
+                  <div className="flex gap-2">
+                    {teacherEditMode ? (
+                      <>
+                        <Button size="sm" variant="outline" onClick={() => setTeacherEditMode(false)} disabled={teacherSaving}>
+                          Cancel
+                        </Button>
+                        <Button size="sm" onClick={handleSaveTeacher} disabled={teacherSaving}>
+                          {teacherSaving ? 'Saving...' : 'Save'}
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button size="sm" variant="outline" onClick={() => setTeacherEditMode(true)}>
+                          Edit
+                        </Button>
+                        <Button size="sm" variant="destructive" onClick={handleDeleteTeacher}>
+                          Delete
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Name</p>
+                    {teacherEditMode ? (
+                      <Input
+                        value={teacherEditForm.name}
+                        onChange={(e) => setTeacherEditForm((prev) => ({ ...prev, name: e.target.value }))}
+                      />
+                    ) : (
+                      <p className="font-medium">{selectedTeacher.name}</p>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Designation</p>
+                    {teacherEditMode ? (
+                      <Input
+                        value={teacherEditForm.designation}
+                        onChange={(e) => setTeacherEditForm((prev) => ({ ...prev, designation: e.target.value }))}
+                      />
+                    ) : (
+                      <p className="font-medium">{selectedTeacher.designation || '—'}</p>
+                    )}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Email</p>
+                    {teacherEditMode ? (
+                      <Input
+                        value={teacherEditForm.email}
+                        onChange={(e) => setTeacherEditForm((prev) => ({ ...prev, email: e.target.value }))}
+                      />
+                    ) : (
+                      <p className="font-medium break-all">{selectedTeacher.email}</p>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Role</p>
+                    {teacherEditMode ? (
+                      <Select
+                        value={teacherEditForm.role}
+                        onValueChange={(value) => setTeacherEditForm((prev) => ({ ...prev, role: value as typeof teacherEditForm.role }))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {['faculty', 'librarian', 'accounts', 'sports', 'admin'].map((role) => (
+                            <SelectItem key={role} value={role}>
+                              {role}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <p className="font-medium capitalize">{selectedTeacher.role}</p>
+                    )}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Department</p>
+                    {teacherEditMode ? (
+                      isSuperAdmin ? (
+                        <Select
+                          value={teacherEditForm.departmentId}
+                          onValueChange={(value) => setTeacherEditForm((prev) => ({ ...prev, departmentId: value }))}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select department" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {departments.filter((dept) => dept !== 'ALL').map((dept) => (
+                              <SelectItem key={dept} value={dept}>
+                                {dept}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <Input value={teacherEditForm.departmentId} disabled className="bg-gray-100" />
+                      )
+                    ) : (
+                      <p className="font-medium">{selectedTeacher.departmentId}</p>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Employee ID</p>
+                    <p className="font-medium">{selectedTeacher.employeeId}</p>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">Select a teacher to view details.</p>
             )}
           </DialogContent>
         </Dialog>
@@ -1885,6 +3156,15 @@ const AdminDashboard: React.FC = () => {
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-2">
+                        <Label htmlFor="teacher-designation">Designation *</Label>
+                        <Input
+                          id="teacher-designation"
+                          placeholder="e.g., Assistant Professor"
+                          value={teacherForm.designation}
+                          onChange={(e) => setTeacherForm({...teacherForm, designation: e.target.value})}
+                        />
+                      </div>
+                      <div className="space-y-2">
                         <Label htmlFor="teacher-role">Role *</Label>
                         <Select value={teacherForm.role} onValueChange={(value: any) => setTeacherForm({...teacherForm, role: value})}>
                           <SelectTrigger>
@@ -1899,7 +3179,9 @@ const AdminDashboard: React.FC = () => {
                           </SelectContent>
                         </Select>
                       </div>
-                      <div className="space-y-2">
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2 col-span-2">
                         <Label htmlFor="temp-pass">Temporary Password *</Label>
                         <Input
                           id="temp-pass"

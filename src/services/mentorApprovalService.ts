@@ -102,7 +102,7 @@ export async function getMenteeClearances(
       const approved = requests.filter(r => r.status === 'approved').length;
       const pending = requests.filter(r => r.status === 'pending').length;
       const rejected = requests.filter(r => r.status === 'rejected').length;
-      const allApproved = approved === total;
+      const allApproved = approved === total-1;
       
       // Check if ready for mentor approval (all approved + mentor request exists)
       const mentorRequest = requests.find(r => r.referenceType === 'mentor');
@@ -351,21 +351,20 @@ export async function getStudentsReadyForHallTicket(
       collection(db, 'no_due_requests'),
       where('departmentId', '==', departmentId),
       where('referenceType', '==', 'mentor'),
-      where('mentorApprovalStatus', '==', 'approved'),
-      where('hallTicketGenerated', '==', false)
+      where('mentorApprovalStatus', '==', 'approved')
     );
     const requestsSnap = await getDocs(requestsQuery);
     
-    return requestsSnap.docs.map(doc => {
-      const data = doc.data() as NoDueRequest;
-      return {
+    return requestsSnap.docs
+      .map(doc => doc.data() as NoDueRequest)
+      .filter((data) => !data.hallTicketGenerated)
+      .map((data) => ({
         usn: data.usn,
         studentName: data.studentName,
         semesterNumber: data.semesterNumber,
         section: data.section,
         mentorApprovedAt: (data.mentorApprovedAt as Timestamp).toDate(),
-      };
-    });
+      }));
   } catch (error: any) {
     throw new Error(error.message || 'Failed to fetch students ready for hall ticket');
   }

@@ -42,6 +42,7 @@ export interface Teacher extends BaseUser {
   employeeId: string;             // Employee ID (replaces empId)
   departmentId: string;           // Department or "institution"
   teacherRole: 'faculty' | 'mentor' | 'librarian' | 'accounts' | 'sports' | 'admin';
+  designation?: string;           // Job title/designation
   
   // Legacy aliases for backward compatibility
   empId?: string;                 // Alias for employeeId
@@ -58,7 +59,19 @@ export interface DepartmentAdmin extends BaseUser {
   dept?: string;                  // Alias for departmentId
 }
 
-export type User = Student | Teacher | DepartmentAdmin;
+// Reprography admin interface
+export interface ReprographyAdmin extends BaseUser {
+  role: 'reprography_admin';
+  employeeId?: string;
+  departmentId?: string;
+  designation?: string;
+  
+  // Legacy aliases for backward compatibility
+  empId?: string;
+  dept?: string;
+}
+
+export type User = Student | Teacher | DepartmentAdmin | ReprographyAdmin;
 
 export interface UserContextType {
   user: User | null;
