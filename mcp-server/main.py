@@ -34,10 +34,14 @@ from tools.embedding_tool import generate_embedding
 # Setup logging
 import logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    force=True
 )
 logger = logging.getLogger(__name__)
+logging.getLogger("storage.redis_storage").setLevel(logging.INFO)
+logging.getLogger("storage.vector_storage").setLevel(logging.INFO)
+logging.getLogger("storage.storage_manager").setLevel(logging.INFO)
 
 # Load environment variables from root .env file
 root_dir = Path(__file__).parent.parent
@@ -222,8 +226,12 @@ async def workflow_search(request: SearchRequest):
             # 3. Store papers in ChromaDB for future semantic search
             try:
                 for paper in papers:
+                    paper_id = paper.get('paper_id') or paper.get('id')
+                    if not paper_id:
+                        logger.warning("⚠️ Skipping paper storage (missing paper_id)")
+                        continue
                     chroma_storage.store_paper(
-                        paper_id=paper.get('id'),
+                        paper_id=paper_id,
                         paper=paper
                     )
                 logger.info("✅ Papers stored in ChromaDB")
@@ -275,7 +283,7 @@ async def tool_summarize_paper(request: SummarizeRequest):
             # 1. Check cache (Redis → ChromaDB)
             cached_summary = await storage_manager.get_summary(request.paper_id)
             if cached_summary:
-                logger.info(f"✅ Cache hit for {request.paper_id}")
+                logger.info(f"DEBUG cache: summary {request.paper_id[:8]} served from cache")
                 tool_executed.labels(tool_name='summarize', status='cached').inc()
                 return {
                     "paper_id": request.paper_id,
@@ -292,8 +300,9 @@ async def tool_summarize_paper(request: SummarizeRequest):
             })
             
             # 3. Store in cache
+            logger.info(f"DEBUG cache: storing summary for {request.paper_id[:8]}")
             await storage_manager.store_summary(request.paper_id, summary)
-            logger.info(f"✅ Summary cached for {request.paper_id}")
+            logger.info(f"DEBUG cache: summary {request.paper_id[:8]} cached")
             
             tool_executed.labels(tool_name='summarize', status='success').inc()
             return {
@@ -342,6 +351,23 @@ async def tool_batch_summarize(request: BatchSummarizeRequest):
     except Exception as e:
         logger.error(f"❌ Batch summarization failed: {e}")
         tool_executed.labels(tool_name='batch-summarize', status='error').inc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@app.get("/tools/cache-status", dependencies=[Depends(verify_api_key)])
+async def tool_cache_status():
+    """Return cache status and counts for Redis and ChromaDB."""
+    try:
+        stats = await storage_manager.get_stats()
+        return {
+            "success": True,
+            "stats": stats
+        }
+    except Exception as e:
+        logger.error(f"❌ Cache status failed: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)

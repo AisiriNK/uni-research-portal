@@ -48,6 +48,10 @@ export function ApprovalsPrinting() {
     };
   }, [userProfile]);
 
+  const handleDownloadHallTicket = (downloadUrl: string) => {
+    window.open(downloadUrl, '_blank');
+  };
+
   if (isTeacher) {
     return (
       <div className="h-full bg-background">
@@ -120,7 +124,7 @@ export function ApprovalsPrinting() {
                       <> · Issued {hallTicket.generatedAt.toLocaleDateString('en-IN')}</>
                     )}
                   </div>
-                  <Button onClick={() => window.open(hallTicket.downloadUrl, '_blank')}>
+                  <Button onClick={() => handleDownloadHallTicket(hallTicket.downloadUrl)}>
                     Download Hall Ticket
                   </Button>
                 </div>

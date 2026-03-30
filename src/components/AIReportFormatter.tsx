@@ -5,9 +5,10 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Textarea } from "@/components/ui/textarea"
 import { Upload, FileText, Download, Eye, Sparkles, Plus, Minus, CheckCircle } from "lucide-react"
 import { useAuth } from "@/contexts/AuthContext"
-import { collection, getDocs } from "firebase/firestore"
+import { collection, doc, getDoc, getDocs } from "firebase/firestore"
 import { db } from "@/config/firebase"
 
 interface TeamMember {
@@ -49,6 +50,21 @@ interface BackendResult {
   wordFileName?: string | null
 }
 
+interface ValidationIssue {
+  severity: "warning" | "critical"
+  label: string
+  message: string
+  suggestion?: string
+}
+
+interface ValidationSummary {
+  critical: number
+  warnings: number
+  images: number
+  figureCaptions: number
+  tableCaptions: number
+}
+
 export function AIReportFormatter() {
   const { user } = useAuth()
   const [sourceDocument, setSourceDocument] = useState<File | null>(null)
@@ -60,19 +76,61 @@ export function AIReportFormatter() {
   const [previewPdfBase64, setPreviewPdfBase64] = useState<string | null>(null)
   const [wordDownloadName, setWordDownloadName] = useState<string | null>(null)
   const [wordDownloadBase64, setWordDownloadBase64] = useState<string | null>(null)
+  const [validationIssues, setValidationIssues] = useState<ValidationIssue[]>([])
+  const [validationSummary, setValidationSummary] = useState<ValidationSummary | null>(null)
+  const [validationLoading, setValidationLoading] = useState(false)
+  const [validationError, setValidationError] = useState<string | null>(null)
   const [teachers, setTeachers] = useState<TeacherOption[]>([])
   const [teachersLoading, setTeachersLoading] = useState(false)
   const [selectedTeacherDesignation, setSelectedTeacherDesignation] = useState("")
   const [hodName, setHodName] = useState("")
   const [hodDesignation, setHodDesignation] = useState("")
+  const [hodDepartment, setHodDepartment] = useState("")
   const [selectedTeacherId, setSelectedTeacherId] = useState("")
+  const [subjectCode, setSubjectCode] = useState("")
+  const [subjectName, setSubjectName] = useState("")
+  const [semester, setSemester] = useState("")
+  const [studentLookupBlocked, setStudentLookupBlocked] = useState(false)
   
   // Team and project details
   const [numTeamMembers, setNumTeamMembers] = useState<number>(1)
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([{ name: "", usn: "" }])
   const [guideName, setGuideName] = useState("")
+  const [guideDepartment, setGuideDepartment] = useState("")
   const [year, setYear] = useState("")
   const [projectTitle, setProjectTitle] = useState("")
+  const [principalName] = useState("S Y Kulkarni")
+  const [principalDesignation1] = useState("Additional Director")
+  const [principalDesignation2] = useState("and Principal")
+  const [abstractContent, setAbstractContent] = useState("")
+
+  const departmentNames: Record<string, string> = {
+    CSE: "Computer Science and Engineering",
+    ECE: "Electronics and Communication Engineering",
+    ME: "Mechanical Engineering",
+    CE: "Civil Engineering",
+    EEE: "Electrical and Electronics Engineering",
+    ISE: "Information Science and Engineering",
+    AIML: "Artificial Intelligence and Machine Learning",
+  }
+
+  const resolveDepartmentName = (deptId: string) => {
+    if (!deptId) return ""
+    const normalized = deptId.toUpperCase()
+    return departmentNames[normalized] || deptId
+  }
+
+  const resolveDepartmentLabel = (deptId: string) => {
+    if (!deptId) return ""
+    const normalized = deptId.toUpperCase()
+    if (normalized.startsWith("DEPARTMENT OF")) {
+      return deptId
+    }
+    if (departmentNames[normalized]) {
+      return `Department of ${normalized}`
+    }
+    return deptId.toLowerCase().startsWith("department of ") ? deptId : `Department of ${deptId}`
+  }
 
   useEffect(() => {
     const loadTeachers = async () => {
@@ -102,9 +160,11 @@ export function AIReportFormatter() {
           )
           setHodName(hodMatch?.name || '')
           setHodDesignation(hodMatch?.designation || '')
+          setHodDepartment(resolveDepartmentLabel(user.departmentId))
         } else {
           setHodName('')
           setHodDesignation('')
+          setHodDepartment('')
         }
       } catch (error) {
         console.error('Error loading teachers:', error)
@@ -115,6 +175,45 @@ export function AIReportFormatter() {
 
     loadTeachers()
   }, [user?.departmentId])
+
+  const primaryUsn = teamMembers[0]?.usn?.trim()
+
+  useEffect(() => {
+    const loadStudentContext = async () => {
+      if (!primaryUsn) {
+        setSemester("")
+        return
+      }
+
+      if (studentLookupBlocked) {
+        return
+      }
+
+      try {
+        const studentSnap = await getDoc(doc(db, "students", primaryUsn))
+        if (!studentSnap.exists()) {
+          setSemester("")
+          return
+        }
+        const studentData = studentSnap.data() as any
+        const semesterValue =
+          studentData.currentSemester ??
+          studentData.semesterNumber ??
+          studentData.semester ??
+          ""
+        setSemester(semesterValue ? String(semesterValue) : "")
+      } catch (error: any) {
+        if (error?.code === "permission-denied" || String(error?.message || "").includes("permission-denied")) {
+          setStudentLookupBlocked(true)
+          setSemester("")
+          return
+        }
+        console.error("Error loading student details:", error)
+      }
+    }
+
+    loadStudentContext()
+  }, [primaryUsn, studentLookupBlocked, user?.departmentId])
 
   const handleSourceDocumentUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -143,7 +242,17 @@ export function AIReportFormatter() {
     setProcessingStatus({ stage, progress, message })
   }
 
-  const processDocumentWithBackend = async (file: File, projectDetails: { title: string, guide: string, year: string, teamMembers: TeamMember[] }): Promise<BackendResult> => {
+  const processDocumentWithBackend = async (
+    file: File,
+    projectDetails: {
+      title: string
+      guide: string
+      subjectCode: string
+      subjectName: string
+      year: string
+      teamMembers: TeamMember[]
+    }
+  ): Promise<BackendResult> => {
     try {
       updateProcessingStatus('uploading', 25, 'Uploading document to backend...')
       
@@ -152,9 +261,21 @@ export function AIReportFormatter() {
       formData.append('file', file)
       formData.append('project_title', projectDetails.title)
       formData.append('guide_name', projectDetails.guide)
+      formData.append('guide_designation', selectedTeacherDesignation)
+      formData.append('guide_department', guideDepartment)
+      formData.append('subject_code', projectDetails.subjectCode)
+      formData.append('subject_name', projectDetails.subjectName)
+      formData.append('hod_name', hodName)
+      formData.append('hod_designation', hodDesignation)
+      formData.append('hod_department', hodDepartment)
+      formData.append('principal_name', principalName)
+      formData.append('principal_designation', principalDesignation1)
+      formData.append('principal_designation2', principalDesignation2)
+      formData.append('semester', semester)
+      formData.append('abstract_content', abstractContent)
       formData.append('year', projectDetails.year)
       if (user?.departmentId) {
-        formData.append('dept', user.departmentId)
+        formData.append('dept', resolveDepartmentName(user.departmentId))
       }
       formData.append('team_members_json', JSON.stringify(projectDetails.teamMembers))
       
@@ -230,7 +351,7 @@ export function AIReportFormatter() {
       return
     }
 
-    if (!projectTitle || !guideName || !year || teamMembers.some(member => !member.name || !member.usn)) {
+    if (!projectTitle || !guideName || !subjectCode || !subjectName || !year || teamMembers.some(member => !member.name || !member.usn)) {
       alert('Please fill in all project details and team member information')
       return
     }
@@ -243,6 +364,8 @@ export function AIReportFormatter() {
       const projectDetails = {
         title: projectTitle,
         guide: guideName,
+        subjectCode: subjectCode,
+        subjectName: subjectName,
         year: year,
         teamMembers: teamMembers
       }
@@ -272,6 +395,41 @@ export function AIReportFormatter() {
       updateProcessingStatus('error', 0, `Error: ${error instanceof Error ? error.message : 'Unknown error'}`)
     } finally {
       setIsProcessing(false)
+    }
+  }
+
+  const handleValidate = async () => {
+    if (!sourceDocument) {
+      alert('Please upload source document')
+      return
+    }
+
+    setValidationLoading(true)
+    setValidationError(null)
+    setValidationIssues([])
+    setValidationSummary(null)
+
+    try {
+      const formData = new FormData()
+      formData.append('file', sourceDocument)
+
+      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL}/api/validate-document`, {
+        method: 'POST',
+        body: formData,
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: 'Validation failed' }))
+        throw new Error(errorData.detail || `HTTP ${response.status}`)
+      }
+
+      const result = await response.json()
+      setValidationIssues(result.issues || [])
+      setValidationSummary(result.summary || null)
+    } catch (error) {
+      setValidationError(error instanceof Error ? error.message : 'Validation failed')
+    } finally {
+      setValidationLoading(false)
     }
   }
 
@@ -372,34 +530,10 @@ export function AIReportFormatter() {
                   </div>
 
                   <div>
-                    <Label htmlFor="guide">Guide Name</Label>
-                    <Select
-                      value={selectedTeacherId}
-                      onValueChange={(value) => {
-                        setSelectedTeacherId(value)
-                        const selected = teachers.find((teacher) => teacher.id === value)
-                        setGuideName(selected?.name || '')
-                        setSelectedTeacherDesignation(selected?.designation || '')
-                      }}
-                    >
-                      <SelectTrigger id="guide" className="mt-1">
-                        <SelectValue placeholder={teachersLoading ? 'Loading teachers...' : 'Select guide'} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {teachers.map((teacher) => (
-                          <SelectItem key={teacher.id} value={teacher.id}>
-                            {teacher.name} {teacher.designation ? `(${teacher.designation})` : ''}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div>
-                    <Label htmlFor="year">Year</Label>
+                    <Label htmlFor="year">Academic Year</Label>
                     <Input
                       id="year"
-                      placeholder="Enter year (e.g., 2024)"
+                      placeholder="Enter academic year (e.g., 2025-2026)"
                       className="mt-1"
                       value={year}
                       onChange={(e) => setYear(e.target.value)}
@@ -477,6 +611,213 @@ export function AIReportFormatter() {
               </CardContent>
             </Card>
 
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Teachers</CardTitle>
+                <CardDescription>
+                  Select guide information
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="guide">Guide Name</Label>
+                    <Select
+                      value={selectedTeacherId}
+                      onValueChange={(value) => {
+                        setSelectedTeacherId(value)
+                        const selected = teachers.find((teacher) => teacher.id === value)
+                        setGuideName(selected?.name || '')
+                        setSelectedTeacherDesignation(selected?.designation || '')
+                        setGuideDepartment(resolveDepartmentLabel(selected?.departmentId || ''))
+                      }}
+                    >
+                      <SelectTrigger id="guide" className="mt-1">
+                        <SelectValue placeholder={teachersLoading ? 'Loading teachers...' : 'Select guide'} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {teachers.map((teacher) => (
+                          <SelectItem key={teacher.id} value={teacher.id}>
+                            {teacher.name} {teacher.designation ? `(${teacher.designation})` : ''}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label htmlFor="guide-designation">Guide Designation</Label>
+                    <Input
+                      id="guide-designation"
+                      className="mt-1"
+                      value={selectedTeacherDesignation}
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="guide-department">Guide Department</Label>
+                    <Input
+                      id="guide-department"
+                      className="mt-1"
+                      value={guideDepartment}
+                      onChange={(e) => setGuideDepartment(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">HOD Details</CardTitle>
+                <CardDescription>
+                  Confirm HOD information
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="hod-name">HOD Name</Label>
+                    <Input
+                      id="hod-name"
+                      className="mt-1"
+                      value={hodName}
+                      onChange={(e) => setHodName(e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="hod-designation">HOD Designation</Label>
+                    <Input
+                      id="hod-designation"
+                      className="mt-1"
+                      value={hodDesignation}
+                      onChange={(e) => setHodDesignation(e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="hod-department">HOD Department</Label>
+                    <Input
+                      id="hod-department"
+                      className="mt-1"
+                      value={hodDepartment}
+                      onChange={(e) => setHodDepartment(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Subject Details</CardTitle>
+                <CardDescription>
+                  Enter subject details manually
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="subject-code">Subject Code</Label>
+                    <Input
+                      value={subjectCode}
+                      id="subject-code"
+                      className="mt-1"
+                      placeholder="Enter subject code"
+                      onChange={(e) => setSubjectCode(e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="subject-name">Subject Name</Label>
+                    <Input
+                      id="subject-name"
+                      className="mt-1"
+                      value={subjectName}
+                      placeholder="Enter subject name"
+                      onChange={(e) => setSubjectName(e.target.value)}
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="semester">Semester</Label>
+                    <Input
+                      id="semester"
+                      className="mt-1"
+                      value={semester}
+                      onChange={(e) => setSemester(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Principal Details</CardTitle>
+                <CardDescription>
+                  Enter principal information
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="principal-name">Principal Name</Label>
+                    <Input
+                      id="principal-name"
+                      className="mt-1"
+                      value={principalName}
+                      readOnly
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="principal-designation-1">Principal Designation 1</Label>
+                    <Input
+                      id="principal-designation-1"
+                      className="mt-1"
+                      value={principalDesignation1}
+                      readOnly
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="principal-designation-2">Principal Designation 2</Label>
+                    <Input
+                      id="principal-designation-2"
+                      className="mt-1"
+                      value={principalDesignation2}
+                      readOnly
+                    />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Abstract</CardTitle>
+                <CardDescription>
+                  Add the abstract content for the report front page
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="abstract-content">Abstract Content</Label>
+                    <Textarea
+                      id="abstract-content"
+                      className="mt-1 min-h-[120px]"
+                      value={abstractContent}
+                      onChange={(e) => setAbstractContent(e.target.value)}
+                      placeholder="Enter abstract text"
+                    />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
             {isProcessing && (
               <Card>
                 <CardHeader>
@@ -522,9 +863,68 @@ export function AIReportFormatter() {
               </Card>
             )}
 
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Report Validation</CardTitle>
+                <CardDescription>
+                  Run quality checks for captions, references, spelling, and grammar.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <Button
+                  onClick={handleValidate}
+                  disabled={validationLoading || !sourceDocument}
+                  variant="outline"
+                  className="w-full"
+                >
+                  {validationLoading ? 'Validating...' : 'Validate Report'}
+                </Button>
+
+                {validationError && (
+                  <div className="text-sm text-destructive">{validationError}</div>
+                )}
+
+                {validationSummary && (
+                  <div className="text-sm text-muted-foreground">
+                    {validationSummary.critical} critical · {validationSummary.warnings} warnings ·
+                    {` ${validationSummary.images} images, ${validationSummary.figureCaptions} figure captions, ${validationSummary.tableCaptions} table captions`}
+                  </div>
+                )}
+
+                {validationIssues.length > 0 && (
+                  <div className="space-y-2">
+                    {validationIssues.map((issue, index) => (
+                      <div key={index} className="flex items-start gap-3 rounded border p-3">
+                        <Badge
+                          className={
+                            issue.severity === 'critical'
+                              ? 'bg-red-100 text-red-700'
+                              : 'bg-amber-100 text-amber-700'
+                          }
+                        >
+                          {issue.severity.toUpperCase()}
+                        </Badge>
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium">{issue.label}</p>
+                          <p className="text-sm text-muted-foreground">{issue.message}</p>
+                          {issue.suggestion && (
+                            <p className="text-xs text-muted-foreground">Suggestion: {issue.suggestion}</p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {validationIssues.length === 0 && validationSummary && !validationLoading && !validationError && (
+                  <div className="text-sm text-muted-foreground">No issues detected.</div>
+                )}
+              </CardContent>
+            </Card>
+
             <Button 
               onClick={handleProcess} 
-              disabled={isProcessing || !sourceDocument || !projectTitle || !guideName || !year}
+              disabled={isProcessing || !sourceDocument || !projectTitle || !guideName || !subjectCode || !subjectName || !year}
               className="w-full bg-gradient-primary hover:bg-academic-blue-dark"
             >
               {isProcessing ? (

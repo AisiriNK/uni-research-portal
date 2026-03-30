@@ -17,11 +17,11 @@ import {
   updateDoc,
   getDoc,
   serverTimestamp,
-  setDoc,
 } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage } from '@/config/firebase';
+import { db } from '@/config/firebase';
 import { NoDueRequest, Student, Curriculum } from '@/types/schema';
+
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
 
 async function loadBnmitLogoDataUrl(): Promise<string | null> {
   try {
@@ -29,9 +29,13 @@ async function loadBnmitLogoDataUrl(): Promise<string | null> {
     if (!response.ok) {
       return null;
     }
-    const svgText = await response.text();
-    const encoded = btoa(unescape(encodeURIComponent(svgText)));
-    return `data:image/svg+xml;base64,${encoded}`;
+    const blob = await response.blob();
+    return await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
   } catch (error) {
     return null;
   }
@@ -110,7 +114,7 @@ async function getHallTicketData(usn: string): Promise<HallTicketData> {
       }
     });
     
-    const subjects: Array<{ subjectCode: string; subjectName: string }> = [];
+    const subjects: Array<{ subjectCode: string; subjectName: string; examDate?: string }> = [];
     
     for (const currDoc of curriculumSnap.docs) {
       const curr = currDoc.data() as Curriculum;
@@ -197,7 +201,7 @@ export async function generateHallTicket(
     const logoDataUrl = await loadBnmitLogoDataUrl();
     if (logoDataUrl) {
       try {
-        pdfDoc.addImage(logoDataUrl, 'SVG', margin, margin - 5, 18, 18);
+        pdfDoc.addImage(logoDataUrl, 'JPEG', margin, margin - 5, 18, 18);
       } catch (error) {
         // Ignore logo rendering issues
       }
@@ -288,7 +292,7 @@ export async function generateHallTicket(
     pdfDoc.text('Subject Code', margin + 15, yPos);
     pdfDoc.text('Subject Name', margin + 45, yPos);
     pdfDoc.text('Exam Date', margin + 115, yPos);
-    pdfDoc.text('Student Signature', margin + 145, yPos);
+    pdfDoc.text('Signature', margin + 145, yPos);
     
     yPos += 10;
     
@@ -326,7 +330,7 @@ export async function generateHallTicket(
     pdfDoc.setFont('helvetica', 'normal');
     pdfDoc.setFontSize(10);
     pdfDoc.line(margin + 5, sigYPos, margin + 60, sigYPos);
-    pdfDoc.text('Student Signature', margin + 5, sigYPos + 5);
+    pdfDoc.text('Signature', margin + 5, sigYPos + 5);
     
     // Invigilator signature
     pdfDoc.line(pageWidth - margin - 60, sigYPos, pageWidth - margin - 5, sigYPos);
@@ -344,59 +348,8 @@ export async function generateHallTicket(
     pdfDoc.setLineWidth(0.5);
     pdfDoc.rect(margin - 5, margin - 5, pageWidth - 2 * margin + 10, pageHeight - 2 * margin + 10);
     
-    // Update database to mark hall ticket as generated
-    const allRequestsQuery = query(
-      collection(db, 'no_due_requests'),
-      where('usn', '==', usn)
-    );
-    const allRequestsSnap = await getDocs(allRequestsQuery);
-    
-    for (const reqDoc of allRequestsSnap.docs) {
-      await updateDoc(doc(db, 'no_due_requests', reqDoc.id), {
-        hallTicketGenerated: true,
-        hallTicketGeneratedAt: serverTimestamp(),
-        hallTicketGeneratedBy: adminId,
-        status: 'completed',
-      });
-    }
-
-    // Upload hall ticket for student download
-    const pdfBlob = pdfDoc.output('blob');
-    const storagePath = `hall-tickets/${usn}/HallTicket_${usn}_Sem${data.semester}_${Date.now()}.pdf`;
-    const storageRef = ref(storage, storagePath);
-    try {
-      await uploadBytes(storageRef, pdfBlob, { contentType: 'application/pdf' });
-    } catch (error: any) {
-      const code = error?.code || 'storage/unknown';
-      const serverResponse = error?.serverResponse || error?.customData?.serverResponse || '';
-      throw new Error(`Storage upload failed (${code}). ${serverResponse}`.trim());
-    }
-
-    let downloadUrl = '';
-    try {
-      downloadUrl = await getDownloadURL(storageRef);
-    } catch (error) {
-      // Ignore download URL failures; clients can resolve later.
-    }
-
-    const hallTicketId = `HT_${usn}_SEM${data.semester}`;
-    await setDoc(
-      doc(db, 'hall_tickets', hallTicketId),
-      {
-        usn,
-        semesterNumber: data.semester,
-        departmentId: data.departmentId,
-        section: data.section,
-        studentName: data.studentName,
-        downloadUrl,
-        storagePath,
-        generatedAt: serverTimestamp(),
-        generatedBy: adminId,
-      },
-      { merge: true }
-    );
-    
     // Return PDF as blob
+    const pdfBlob = pdfDoc.output('blob');
     return pdfBlob;
   } catch (error: any) {
     throw new Error(error.message || 'Failed to generate hall ticket');
@@ -408,36 +361,43 @@ export async function getStudentHallTicket(usn: string): Promise<{
   semesterNumber: number;
   generatedAt?: Date;
 } | null> {
-  const ticketsQuery = query(
-    collection(db, 'hall_tickets'),
-    where('usn', '==', usn)
-  );
-  const ticketsSnap = await getDocs(ticketsQuery);
-  if (ticketsSnap.empty) {
+  try {
+    const { collection, query, where, orderBy, getDocs } = await import('firebase/firestore');
+    const { db } = await import('@/config/firebase');
+    
+    console.log('[HallTicket] Fetching hall ticket for USN:', usn);
+    
+    // Query latest hall ticket from Firestore
+    const q = query(
+      collection(db, 'hall_tickets'),
+      where('usn', '==', usn),
+      orderBy('generatedAt', 'desc')
+    );
+    
+    const querySnap = await getDocs(q);
+    
+    console.log('[HallTicket] Query results:', {
+      isEmpty: querySnap.empty,
+      docCount: querySnap.size,
+      docs: querySnap.docs.map(d => ({ id: d.id, data: d.data() }))
+    });
+    
+    if (!querySnap.empty) {
+      const docData = querySnap.docs[0].data() as any;
+      console.log('[HallTicket] Found hall ticket:', docData);
+      return {
+        downloadUrl: docData.pdfUrl,
+        semesterNumber: docData.semesterNumber,
+        generatedAt: docData.generatedAt?.toDate ? docData.generatedAt.toDate() : new Date(docData.generatedAt),
+      };
+    }
+    
+    console.log('[HallTicket] No hall ticket found for USN:', usn);
+    return null;    return null;
+  } catch (error) {
+    console.error('Error fetching hall ticket:', error);
     return null;
   }
-  const latest = ticketsSnap.docs
-    .map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() as any) }))
-    .sort((a, b) => {
-      const aTime = a.generatedAt?.toDate ? a.generatedAt.toDate().getTime() : 0;
-      const bTime = b.generatedAt?.toDate ? b.generatedAt.toDate().getTime() : 0;
-      return bTime - aTime;
-    })[0];
-
-  let resolvedUrl = latest.downloadUrl || '';
-  if (!resolvedUrl && latest.storagePath) {
-    try {
-      resolvedUrl = await getDownloadURL(ref(storage, latest.storagePath));
-    } catch (error) {
-      resolvedUrl = '';
-    }
-  }
-
-  return {
-    downloadUrl: resolvedUrl,
-    semesterNumber: latest.semesterNumber,
-    generatedAt: latest.generatedAt?.toDate ? latest.generatedAt.toDate() : undefined,
-  };
 }
 
 /**

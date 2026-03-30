@@ -18,6 +18,9 @@ import logging
 import time
 import random
 import threading
+import shutil
+import docx
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Tuple
 from pathlib import Path
@@ -35,11 +38,183 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AI report formatter pipeline")
     parser.add_argument("--input", required=True, help="Path to the uploaded Word document")
     parser.add_argument("--project-title", required=True, help="Project title from UI")
+    parser.add_argument("--subject-name", default="", help="Subject name from UI")
+    parser.add_argument("--subject-code", default="", help="Subject code from UI")
     parser.add_argument("--guide-name", required=True, help="Guide name from UI")
+    parser.add_argument("--guide-designation", default="", help="Guide designation from UI")
+    parser.add_argument("--guide-department", default="", help="Guide department from UI")
+    parser.add_argument("--hod-name", default="", help="HOD name from UI")
+    parser.add_argument("--hod-designation", default="", help="HOD designation from UI")
+    parser.add_argument("--hod-department", default="", help="HOD department from UI")
+    parser.add_argument("--principal-name", default="S Y Kulkarni", help="Principal name from UI")
+    parser.add_argument("--principal-designation-1", default="Principal", help="Principal designation line 1")
+    parser.add_argument("--principal-designation-2", default="and Additional Director", help="Principal designation line 2")
+    parser.add_argument("--semester", default="", help="Semester from UI")
+    parser.add_argument("--abstract-content", default="", help="Abstract content from UI")
     parser.add_argument("--year", required=True, help="Year from UI")
     parser.add_argument("--dept", default="", help="Department from UI")
     parser.add_argument("--team-members-json", required=True, help="Team members JSON from UI")
     return parser.parse_args()
+
+def escape_typ_string(value: str) -> str:
+    if value is None:
+        return ""
+    return str(value).replace("\\", "\\\\").replace('"', "\\\"")
+
+def build_front_page_typst(front_template_path: Path, output_path: Path, data: Dict[str, str]) -> None:
+    template_text = front_template_path.read_text(encoding="utf-8")
+    marker = "// First page border"
+    marker_idx = template_text.find(marker)
+    if marker_idx == -1:
+        raise SystemExit("Front page template marker not found")
+
+    lets_lines = [
+        "#set page(\n  margin: (top: 2cm, bottom: 2cm, left: 2.5cm, right: 2cm)\n)\n\n"
+    ]
+
+    for key in [
+        "vtu_logo_path",
+        "clg_logo_path",
+        "clg_name_path",
+        "subject_name",
+        "subject_code",
+        "project_title",
+        "student_department",
+        "academic_year",
+        "student_name_1",
+        "student_name_2",
+        "student_name_3",
+        "student_id_1",
+        "student_id_2",
+        "student_id_3",
+        "guide_name",
+        "guide_designation",
+        "guide_department",
+        "hod_name",
+        "hod_designation",
+        "hod_department",
+        "principal_name",
+        "principal_designation_1",
+        "principal_designation_2",
+        "semester",
+        "abstract_content",
+    ]:
+        value = escape_typ_string(data.get(key, ""))
+        lets_lines.append(f'#let {key} = "{value}"\n')
+
+    body = template_text[marker_idx:]
+    output_path.write_text("".join(lets_lines) + body, encoding="utf-8")
+
+def extract_references_typst(input_file: Path) -> str:
+    doc = docx.Document(str(input_file))
+    lines: List[str] = []
+
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if not text:
+            continue
+        if text.isupper() or text.startswith("http") or "." not in text.split()[0]:
+            formatted = text
+        elif text.startswith("[") and "]." in text:
+            formatted = text[0:text.find("]") + 1] + text[text.find("]") + 1:].title()
+        else:
+            formatted = text
+        lines.append(formatted)
+
+    return "\n\n".join(lines).strip()
+
+def normalize_chapter_heading(value: str) -> str:
+    if not value:
+        return ""
+    cleaned = re.sub(r"\s+", " ", value.strip())
+    cleaned = cleaned.replace("CHAPTER-", "CHAPTER -").replace("CHAPTER -", "CHAPTER - ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    # Convert to uppercase
+    cleaned = cleaned.upper()
+    return cleaned
+
+def extract_caption_entries(text: str, chapter_start_page: int) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+    figure_entries: List[Dict[str, str]] = []
+    table_entries: List[Dict[str, str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        # Remove "Figure N:" prefix if present, leaving just the caption
+        normalized_line = re.sub(r"^Figure\s+\d+\s*[:.-]?\s*", "", line, flags=re.IGNORECASE)
+        
+        # Match "Fig N: ..." format - PRIMARY PATTERN FOR FIGURES
+        fig_match = re.match(r"^Fig\.?\s*([\d.]+)\s*[:.-]?\s*(.*)$", normalized_line, re.IGNORECASE)
+        if fig_match:
+            number = fig_match.group(1).strip()
+            title = fig_match.group(2).strip()
+            # Only add if title is not empty and is not all caps heading
+            if title and not title.isupper():
+                figure_entries.append({
+                    "number": number,
+                    "title": title,
+                    "page": str(chapter_start_page)
+                })
+            continue
+        
+        table_match = re.match(r"^Table\s*([\d.]+)\s*[:.-]?\s*(.*)$", normalized_line, re.IGNORECASE)
+        if table_match:
+            number = table_match.group(1).strip()
+            title = table_match.group(2).strip() or normalized_line
+            table_entries.append({
+                "number": number,
+                "title": title,
+                "page": str(chapter_start_page)
+            })
+    return figure_entries, table_entries
+
+def build_toc_typst(
+    toc_entries: List[Dict[str, str]],
+    figure_entries: List[Dict[str, str]],
+    table_entries: List[Dict[str, str]],
+    output_path: Path
+) -> None:
+    lines: List[str] = [
+        "#page(\n  paper: \"a4\",\n  margin: (top: 1in, bottom: 1in, left: 1.25in, right: 1in)\n)[\n",
+        "#set text(font: \"Times New Roman\", size: 12pt)\n",
+        "#set par(leading: 1.5em)\n",
+        "#align(center)[#text(size: 16pt, weight: \"bold\")[TABLE OF CONTENTS]]\n",
+        "#v(0.5em)\n",
+        "#table(\n  columns: (0.8cm, 1fr, 2.5cm),\n  align: (left, left, right),\n  stroke: none,\n  inset: 4pt,\n  [Sl. No.], [Chapter], [Page No.],\n"
+    ]
+    for entry in toc_entries:
+        lines.append(f"  [{entry['no']}], [{entry['title']}], [{entry['page']}],\n")
+    lines.append(")\n")
+
+    lines.append("]\n")
+
+    lines.extend([
+        "#pagebreak()\n",
+        "#align(center)[#text(size: 16pt, weight: \"bold\")[LIST OF FIGURES]]\n",
+        "#v(0.5em)\n",
+        "#table(\n  columns: (1.2cm, 1fr, 2.5cm),\n  align: (left, left, right),\n  stroke: none,\n  inset: 4pt,\n  [Fig. No.], [Figure Title], [Page No.],\n"
+    ])
+    if figure_entries:
+        for entry in figure_entries:
+            lines.append(f"  [{entry['number']}], [{entry['title']}], [{entry['page']}],\n")
+    else:
+        lines.append("  [], [No figures listed], [],\n")
+    lines.append(")\n")
+
+    lines.extend([
+        "#pagebreak()\n",
+        "#align(center)[#text(size: 16pt, weight: \"bold\")[LIST OF TABLES]]\n",
+        "#v(0.5em)\n",
+        "#table(\n  columns: (1.2cm, 1fr, 2.5cm),\n  align: (left, left, right),\n  stroke: none,\n  inset: 4pt,\n  [Table No.], [Table Title], [Page No.],\n"
+    ])
+    if table_entries:
+        for entry in table_entries:
+            lines.append(f"  [{entry['number']}], [{entry['title']}], [{entry['page']}],\n")
+    else:
+        lines.append("  [], [No tables listed], [],\n")
+    lines.append(")\n")
+
+    output_path.write_text("".join(lines), encoding="utf-8")
 
 def main() -> None:
     pipeline_start = time.time()
@@ -93,6 +268,7 @@ def main() -> None:
 
     chapter_strings: List[str] = []
     chapter_map: Dict[str, str] = {}
+    ordered_chapter_names: List[str] = []
     chapter_files = sorted(chapters_dir.glob("*.docx"))
     logger.info("[STEP 3] Found %d chapter docx files", len(chapter_files))
     step3_start = time.time()
@@ -121,6 +297,7 @@ def main() -> None:
             chapter_data = json.load(f)
         for chapter_name, chapter_text in chapter_data.items():
             chapter_map[chapter_name] = chapter_text
+            ordered_chapter_names.append(chapter_name)
             chapter_strings.append(chapter_text)
             logger.info("[STEP 3] Loaded chapter '%s' (%d chars)", chapter_name, len(chapter_text))
 
@@ -399,6 +576,27 @@ All [ and ] pairs in #text[...] are balanced.
         title = lines[1] if len(lines) > 1 else ""
         return heading, title
 
+    def normalize_dept_code(value: str) -> str:
+        if not value:
+            return ""
+        raw = value.strip()
+        lowered = raw.lower()
+        if lowered.startswith("department of "):
+            raw = raw[14:].strip()
+        if lowered.startswith("dept of "):
+            raw = raw[8:].strip()
+        dept_map = {
+            "computer science and engineering": "CSE",
+            "electronics and communication engineering": "ECE",
+            "mechanical engineering": "ME",
+            "civil engineering": "CE",
+            "electrical and electronics engineering": "EEE",
+            "information science and engineering": "ISE",
+            "artificial intelligence and machine learning": "AIML",
+        }
+        normalized = raw.strip()
+        return dept_map.get(normalized.lower(), normalized)
+
     prefix_template = os.getenv(
         "CHAPTER_PREFIX_TEMPLATE",
         """#page(
@@ -484,20 +682,92 @@ All [ and ] pairs in #text[...] are balanced.
         project_title=args.project_title,
         guide_name=args.guide_name,
         year=args.year,
-        dept=args.dept,
+        dept=normalize_dept_code(args.dept),
         team_members=team_members_text
     )
 
     typst_dir = chapters_dir / "typst"
     typst_dir.mkdir(parents=True, exist_ok=True)
     logger.info("[STEP 5] Typst output directory ready: %s", typst_dir)
+    logo_files = {
+        "vtu-logo.jpeg": Path(__file__).with_name("vtu-logo.jpeg"),
+        "clg_logo.jpeg": Path(__file__).with_name("clg_logo.jpeg"),
+        "clg_name.jpeg": Path(__file__).with_name("clg_name.jpeg"),
+    }
+    for target_name, source_path in logo_files.items():
+        if source_path.exists():
+            shutil.copy2(source_path, typst_dir / target_name)
+        else:
+            logger.warning("[STEP 5] Missing logo asset: %s", source_path)
     typst_results: Dict[str, Dict[str, str]] = {}
     step5_start = time.time()
 
     current_page_number = 1
     chapter_index = 1
     chapter_pdf_order: List[Path] = []
-    for chapter_name in chapter_map.keys():
+    chapter_start_pages: Dict[str, int] = {}
+    figure_entries: List[Dict[str, str]] = []
+    table_entries: List[Dict[str, str]] = []
+    front_pdf_path: Path | None = None
+
+    logger.info("[STEP 4.5] Generating front page Typst")
+    front_template_path = Path(__file__).with_name("front_page_template.typ")
+    if front_template_path.exists():
+        student_name_1 = team_members[0].get("name", "") if len(team_members) > 0 else ""
+        student_id_1 = team_members[0].get("usn", "") if len(team_members) > 0 else ""
+        student_name_2 = team_members[1].get("name", "") if len(team_members) > 1 else ""
+        student_id_2 = team_members[1].get("usn", "") if len(team_members) > 1 else ""
+        student_name_3 = team_members[2].get("name", "") if len(team_members) > 2 else ""
+        student_id_3 = team_members[2].get("usn", "") if len(team_members) > 2 else ""
+
+        student_department = args.dept or args.guide_department or args.hod_department
+        front_page_data = {
+            "vtu_logo_path": "vtu-logo.jpeg",
+            "clg_logo_path": "clg_logo.jpeg",
+            "clg_name_path": "clg_name.jpeg",
+            "subject_name": args.subject_name,
+            "subject_code": args.subject_code,
+            "project_title": args.project_title,
+            "student_department": student_department,
+            "academic_year": args.year,
+            "student_name_1": student_name_1,
+            "student_name_2": student_name_2,
+            "student_name_3": student_name_3,
+            "student_id_1": student_id_1,
+            "student_id_2": student_id_2,
+            "student_id_3": student_id_3,
+            "guide_name": args.guide_name,
+            "guide_designation": args.guide_designation,
+            "guide_department": args.guide_department,
+            "hod_name": args.hod_name,
+            "hod_designation": args.hod_designation,
+            "hod_department": args.hod_department,
+            "principal_name": args.principal_name,
+            "principal_designation_1": args.principal_designation_1,
+            "principal_designation_2": args.principal_designation_2,
+            "semester": args.semester,
+            "abstract_content": args.abstract_content,
+        }
+
+        front_typ_path = typst_dir / "front_page.typ"
+        build_front_page_typst(front_template_path, front_typ_path, front_page_data)
+        front_pdf_path = typst_dir / "front_page.pdf"
+
+        typst_cmd = ["typst", "compile", str(front_typ_path), str(front_pdf_path)]
+        typst_process = subprocess.run(
+            typst_cmd,
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        if typst_process.returncode != 0:
+            logger.error("[STEP 4.5] Front page Typst compile failed: %s", typst_process.stderr.strip())
+            raise SystemExit(f"Front page Typst compile failed: {typst_process.stderr.strip()}")
+        chapter_pdf_order.append(front_pdf_path)
+        logger.info("[STEP 4.5] Front page PDF generated: %s", front_pdf_path.name)
+    else:
+        logger.warning("[STEP 4.5] Front page template missing: %s", front_template_path)
+    for chapter_name in ordered_chapter_names:
         response_text = gemini_responses.get(chapter_name, "")
         if not response_text:
             logger.warning("[STEP 5] Missing Gemini response for chapter '%s', skipping Typst compile", chapter_name)
@@ -557,10 +827,145 @@ All [ and ] pairs in #text[...] are balanced.
             "start_page": str(current_page_number)
         }
 
+        chapter_start_pages[chapter_name] = current_page_number
+        chapter_figures, chapter_tables = extract_caption_entries(
+            chapter_map.get(chapter_name, ""),
+            current_page_number
+        )
+        figure_entries.extend(chapter_figures)
+        table_entries.extend(chapter_tables)
+
         chapter_pdf_order.append(typst_output_path)
 
         current_page_number += page_count
         chapter_index += 1
+
+    references_docx = chapters_dir / "references.docx"
+    references_start_page: int | None = None
+    if references_docx.exists():
+        logger.info("[STEP 5] Processing references: %s", references_docx.name)
+        references_body = extract_references_typst(references_docx)
+        if references_body:
+            # Special template for references: no first page, no footer, centered title size 14
+            references_prefix = f"""#let starting_page = {current_page_number}
+#counter(page).update(starting_page)
+
+#let department = "B.E/Dept of {base_metadata['dept']}/BNMIT"
+#let academic_year = "{base_metadata['year']}"
+#let project_title = "{base_metadata['project_title']}"
+
+#set page(
+  paper: "a4",
+  margin: (top: 1in, bottom: 1in, left: 1.25in, right: 1in),
+  numbering: "1",
+  footer: none,
+  header: none
+)
+
+#set text(font: "Times New Roman", size: 12pt, fill: black)
+#set align(center)
+#text(size: 14pt, weight: "bold")[REFERENCES]
+#set align(left)
+
+"""
+            # Strip out REFERENCES heading from body since we already added it
+            references_body_cleaned = references_body.replace("REFERENCES\n", "").strip()
+            references_combined = f"{references_prefix}{references_body_cleaned}"
+
+            references_typ_path = typst_dir / "references.typ"
+            references_pdf_path = typst_dir / "references.pdf"
+            references_typ_path.write_text(references_combined, encoding="utf-8")
+            logger.info("[STEP 5] Typst input written for references: %s", references_typ_path.name)
+
+            references_cmd = ["typst", "compile", str(references_typ_path), str(references_pdf_path)]
+            references_process = subprocess.run(
+                references_cmd,
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+            if references_process.returncode != 0:
+                logger.error("[STEP 5] Typst compile failed for references: %s", references_process.stderr.strip())
+                raise SystemExit(f"Typst compile failed for references: {references_process.stderr.strip()}")
+
+            try:
+                reader = PdfReader(str(references_pdf_path))
+                references_pages = len(reader.pages)
+            except Exception as e:
+                logger.error("[STEP 5] Failed page count for references: %s", str(e))
+                raise SystemExit(f"Failed to read page count for references: {e}")
+
+            typst_results["references"] = {
+                "input_path": str(references_typ_path),
+                "output_path": str(references_pdf_path),
+                "stdout": references_process.stdout.strip(),
+                "stderr": references_process.stderr.strip(),
+                "page_count": str(references_pages),
+                "start_page": str(current_page_number)
+            }
+
+            references_start_page = current_page_number
+
+            chapter_pdf_order.append(references_pdf_path)
+            current_page_number += references_pages
+        else:
+            logger.warning("[STEP 5] References docx had no content, skipping")
+    else:
+        logger.info("[STEP 5] No references.docx found; skipping references")
+
+    toc_entries: List[Dict[str, str]] = []
+    for index, chapter_name in enumerate(ordered_chapter_names, start=1):
+        chapter_heading, chapter_title = extract_chapter_heading_and_title(chapter_map.get(chapter_name, ""))
+        heading = normalize_chapter_heading(chapter_heading)
+        if chapter_title:
+            display_title = f"{heading}: {chapter_title}"
+        else:
+            display_title = heading or chapter_name
+        toc_entries.append({
+            "no": str(index),
+            "title": display_title,
+            "page": str(chapter_start_pages.get(chapter_name, ""))
+        })
+    if references_start_page is not None:
+        toc_entries.append({
+            "no": str(len(toc_entries) + 1),
+            "title": "REFERENCES",
+            "page": str(references_start_page)
+        })
+
+    toc_typ_path = typst_dir / "toc.typ"
+    toc_pdf_path = typst_dir / "toc.pdf"
+    build_toc_typst(toc_entries, figure_entries, table_entries, toc_typ_path)
+    toc_process = subprocess.run(
+        ["typst", "compile", str(toc_typ_path), str(toc_pdf_path)],
+        capture_output=True,
+        text=True,
+        timeout=120
+    )
+    if toc_process.returncode != 0:
+        logger.error("[STEP 5] Typst compile failed for TOC: %s", toc_process.stderr.strip())
+        raise SystemExit(f"Typst compile failed for TOC: {toc_process.stderr.strip()}")
+    try:
+        reader = PdfReader(str(toc_pdf_path))
+        toc_pages = len(reader.pages)
+    except Exception as e:
+        logger.error("[STEP 5] Failed page count for TOC: %s", str(e))
+        raise SystemExit(f"Failed to read page count for TOC: {e}")
+    typst_results["toc"] = {
+        "input_path": str(toc_typ_path),
+        "output_path": str(toc_pdf_path),
+        "stdout": toc_process.stdout.strip(),
+        "stderr": toc_process.stderr.strip(),
+        "page_count": str(toc_pages),
+        "start_page": "0"
+    }
+
+    if toc_pdf_path.exists():
+        if front_pdf_path and front_pdf_path in chapter_pdf_order:
+            front_index = chapter_pdf_order.index(front_pdf_path)
+            chapter_pdf_order.insert(front_index + 1, toc_pdf_path)
+        else:
+            chapter_pdf_order.insert(0, toc_pdf_path)
 
     logger.info("[STEP 5] Typst compilation complete (elapsed: %.2fs)", time.time() - step5_start)
 

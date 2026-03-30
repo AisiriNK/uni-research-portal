@@ -35,7 +35,8 @@ export async function summarizePaper(paper: any): Promise<PaperSummary> {
       ],
       generationConfig: {
         temperature: 0.7,
-        maxOutputTokens: 4096
+        maxOutputTokens: 4096,
+        responseMimeType: 'application/json'
       }
     })
 
@@ -89,7 +90,7 @@ Provide your analysis in the following JSON format:
 - Keep responses specific to the research area indicated by the title
 - Generate valuable analysis that helps understand the research contribution
 
-Please respond with valid JSON only.
+Please respond with valid JSON only. Do not include any additional text, markdown, or commentary.
 `
 }
 
@@ -98,10 +99,36 @@ Please respond with valid JSON only.
  */
 function parseSummaryResponse(response: string): PaperSummary {
   try {
-    const jsonMatch = response.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) throw new Error('No valid JSON found in response')
+    const extractJsonCandidate = (raw: string) => {
+      const start = raw.indexOf('{')
+      const end = raw.lastIndexOf('}')
+      if (start === -1 || end === -1 || end <= start) return null
+      let candidate = raw.slice(start, end + 1)
+      candidate = candidate.replace(/[\u0000-\u001F\u007F]/g, ' ')
 
-    const parsed = JSON.parse(jsonMatch[0])
+      const countUnescapedQuotes = (value: string) => {
+        let count = 0
+        for (let i = 0; i < value.length; i += 1) {
+          if (value[i] === '"' && value[i - 1] !== '\\') {
+            count += 1
+          }
+        }
+        return count
+      }
+
+      if (countUnescapedQuotes(candidate) % 2 === 1) {
+        const lastBrace = candidate.lastIndexOf('}')
+        if (lastBrace > -1) {
+          candidate = `${candidate.slice(0, lastBrace)}"${candidate.slice(lastBrace)}`
+        }
+      }
+      return candidate
+    }
+
+    const jsonCandidate = extractJsonCandidate(response)
+    if (!jsonCandidate) throw new Error('No valid JSON found in response')
+
+    const parsed = JSON.parse(jsonCandidate)
 
     const cleanNotSpecified = (value: string | string[]): string | string[] => {
       if (Array.isArray(value)) {

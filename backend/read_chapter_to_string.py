@@ -23,6 +23,13 @@ def convert_table_to_string(table):
     return table_str
 
 
+def wrap_table_with_caption(table_str, caption=None):
+    """Wrap table with optional centered caption"""
+    if caption:
+        return f"#align(center)[{caption}]\n{table_str}"
+    return table_str
+
+
 # === Helper: Extract document content (paragraphs + tables in order) ===
 def extract_doc_content(doc_path):
     doc = Document(doc_path)

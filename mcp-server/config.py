@@ -3,6 +3,7 @@ Configuration management for MCP Server
 """
 from pydantic_settings import BaseSettings
 from typing import Optional
+from pathlib import Path
 
 
 class Settings(BaseSettings):
@@ -13,6 +14,7 @@ class Settings(BaseSettings):
     ADMIN_API_KEY: str = "admin-key"
     GEMINI_API_KEY: Optional[str] = None
     GROQ_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-1.0-pro"
     
     # Redis Configuration
     REDIS_HOST: str = "localhost"
@@ -49,8 +51,9 @@ class Settings(BaseSettings):
     WORKFLOW_TIMEOUT: int = 300  # 5 minutes
     
     class Config:
-        env_file = ".env"
+        env_file = str((Path(__file__).parent.parent / ".env").resolve())
         case_sensitive = True
+        extra = "ignore"
 
 
 # Global settings instance

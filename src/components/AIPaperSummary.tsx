@@ -19,9 +19,10 @@ import {
   ExternalLink,
   ArrowLeft 
 } from 'lucide-react'
-import { summarizePaper, PaperSummary } from '@/services/geminiService'
+import { PaperSummary } from '@/services/geminiService'
 import { Paper } from '@/services/openAlexService'
 import { toast } from '@/hooks/use-toast'
+import { mcpClient } from '@/services/mcpService'
 
 interface AIPaperSummaryProps {
   paper: Paper | null
@@ -41,12 +42,16 @@ export function AIPaperSummary({ paper, onClose }: AIPaperSummaryProps) {
     setSummary(null)
 
     try {
-      const result = await summarizePaper(paper)
-      setSummary(result)
+      const result = await mcpClient.summarizePaper({
+        id: paper.id,
+        title: paper.title,
+        abstract: paper.abstract || ''
+      })
+      setSummary(result.summary as PaperSummary)
       
       toast({
         title: "AI Summary Generated",
-        description: "Paper has been analyzed successfully by Gemini AI.",
+        description: result.cached ? "Summary loaded from cache." : "Paper has been analyzed successfully by Gemini AI.",
       })
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to generate summary'

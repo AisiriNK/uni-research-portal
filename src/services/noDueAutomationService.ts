@@ -4,12 +4,22 @@
  * This service handles automatic no-due request generation and routing
  * based on the student's curriculum, section, and assigned teachers.
  * 
+ * DISPATCH RECIPIENTS:
+ * When a no-due is dispatched for a student, clearance requests are sent to:
+ * 1. All Subject Teachers - One request per core subject the student takes
+ * 2. Open Elective Teacher - If student has chosen an open elective
+ * 3. Mentor - Student's assigned mentor (handles fees clearance as well)
+ * 4. Library - Institution-wide librarian (library clearance)
+ * 5. Sports - Department-scoped sports coordinator (sports clearance)
+ * 6. Certificate - Department-scoped certificate coordinator (certificate clearance)
+ * 
  * KEY FEATURES:
  * - Automatic semester calculation based on batch year
  * - Auto-routing to correct teachers (NO manual teacher selection)
  * - Handles core subjects, open electives, and common clearances
  * - Routes mentor clearance to student's assigned mentor
  * - Routes library clearance to institution-wide librarian
+ * - Routes sports/certificate clearances to department-specific teachers
  */
 
 import {
@@ -144,22 +154,48 @@ export async function getTeacher(employeeId: string): Promise<Teacher> {
 
 /**
  * Fetches institution-wide librarian
+ * Searches for librarian with departmentId = 'ALL', 'institution', or just role='librarian'
  */
 export async function getLibrarian(): Promise<Teacher> {
-  const q = query(
+  // Try with 'ALL' first (most common)
+  let q = query(
+    collection(db, COLLECTIONS.TEACHERS),
+    where('role', '==', 'librarian'),
+    where('departmentId', '==', 'ALL')
+  );
+  
+  let querySnap = await getDocs(q);
+  
+  if (!querySnap.empty) {
+    return querySnap.docs[0].data() as Teacher;
+  }
+  
+  // Fallback: try 'institution'
+  q = query(
     collection(db, COLLECTIONS.TEACHERS),
     where('role', '==', 'librarian'),
     where('departmentId', '==', 'institution')
   );
   
-  const querySnap = await getDocs(q);
+  querySnap = await getDocs(q);
   
-  if (querySnap.empty) {
-    throw new Error('No librarian configured. Please contact admin.');
+  if (!querySnap.empty) {
+    return querySnap.docs[0].data() as Teacher;
   }
   
-  // Return first librarian found
-  return querySnap.docs[0].data() as Teacher;
+  // Final fallback: just find any librarian (no department filter)
+  q = query(
+    collection(db, COLLECTIONS.TEACHERS),
+    where('role', '==', 'librarian')
+  );
+  
+  querySnap = await getDocs(q);
+  
+  if (!querySnap.empty) {
+    return querySnap.docs[0].data() as Teacher;
+  }
+  
+  throw new Error('No librarian configured. Please create a teacher with role "librarian".');
 }
 
 // ============================================================================
@@ -295,15 +331,15 @@ export async function getCommonClearanceTeacher(
 /**
  * Generates ALL no-due requests for a student automatically
  * 
- * This function:
- * 1. Calculates student's current semester
- * 2. Fetches all core subjects for the semester
- * 3. Routes each core subject to section-specific teacher
- * 4. Routes open elective to assigned teacher
- * 5. Routes common clearances (library, fees, sports, certificate)
- * 6. Routes mentor clearance to student's assigned mentor
+ * This function creates clearance requests and routes them to:
+ * 1. Core Subject Teachers - Each student's core subjects (section-specific)
+ * 2. Open Elective Teacher - If student has chosen an elective
+ * 3. Sports Coordinator - Department-scoped sports clearance (from common_clearance_mapping)
+ * 4. Certificate Coordinator - Department-scoped certificate clearance (from common_clearance_mapping)
+ * 5. Librarian - Institution-wide librarian for library clearance
+ * 6. Mentor - Student's assigned mentor (also handles fees)
  * 
- * NO MANUAL TEACHER SELECTION - All routing is automatic!
+ * No manual teacher selection needed - all routing is automatic!
  */
 export async function generateNoDueRequests(usn: string): Promise<{
   success: boolean;

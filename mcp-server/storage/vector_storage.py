@@ -105,6 +105,8 @@ class ChromaDBStorage:
                     metadatas=[metadata],
                     documents=[paper.get('abstract', paper.get('title', ''))]
                 )
+
+            logger.info(f"DEBUG cache: stored paper {paper_id[:8]} in ChromaDB")
             
             return True
             
@@ -155,6 +157,8 @@ class ChromaDBStorage:
                 ids=[paper_id],
                 metadatas=[paper]
             )
+
+            logger.info(f"DEBUG cache: stored summary {paper_id[:8]} in ChromaDB")
             
             return True
             
@@ -186,6 +190,8 @@ class ChromaDBStorage:
                 ids=[paper_id],
                 metadatas=[paper]
             )
+
+            logger.info(f"DEBUG cache: stored gaps {paper_id[:8]} in ChromaDB")
             
             return True
             

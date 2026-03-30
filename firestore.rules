@@ -72,14 +72,9 @@ service cloud.firestore {
       // Allow unauthenticated GET (needed for USN+DOB login verification)
       allow get: if !isAuthenticated();
 
-      // Students can read their own profile
-      // Teachers can read student profiles (needed for no-due requests)
-      // Admins can read student profiles
-      allow read: if isAuthenticated() && (
-        getProfileId() == usn ||  // Student reading own profile
-        isTeacher() ||             // Teachers need to see student details
-        isAdminUser()        // Admins need to see student details
-      );
+      // Allow any authenticated user to read student profiles
+      // (required for AI report formatter lookup)
+      allow read: if isAuthenticated();
       
       // Students can create their own profile during signup
       // Admins can create student profiles

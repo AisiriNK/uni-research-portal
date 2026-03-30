@@ -72,6 +72,7 @@ class RedisStorage:
                 ttl,
                 json.dumps(context, default=str)
             )
+            logger.info(f"DEBUG cache: stored context {context_id[:8]} in Redis (ttl={ttl})")
             return True
         except Exception as e:
             logger.error(f"Redis set_context error: {e}")
@@ -85,7 +86,9 @@ class RedisStorage:
         try:
             data = await self.client.get(f"context:{context_id}")
             if data:
+                logger.info(f"DEBUG cache: context {context_id[:8]} hit in Redis")
                 return json.loads(data)
+            logger.info(f"DEBUG cache: context {context_id[:8]} miss in Redis")
             return None
         except Exception as e:
             logger.error(f"Redis get_context error: {e}")
@@ -180,6 +183,7 @@ class RedisStorage:
                 ttl,
                 summary
             )
+            logger.info(f"DEBUG cache: stored summary {paper_id[:8]} in Redis (ttl={ttl})")
             return True
         except Exception as e:
             logger.error(f"Redis cache_summary error: {e}")
@@ -191,7 +195,12 @@ class RedisStorage:
             return None
         
         try:
-            return await self.client.get(f"summary:{paper_id}")
+            value = await self.client.get(f"summary:{paper_id}")
+            if value:
+                logger.info(f"DEBUG cache: summary {paper_id[:8]} hit in Redis")
+            else:
+                logger.info(f"DEBUG cache: summary {paper_id[:8]} miss in Redis")
+            return value
         except Exception as e:
             logger.error(f"Redis get_summary error: {e}")
             return None
@@ -217,6 +226,7 @@ class RedisStorage:
                 ttl,
                 json.dumps(gaps)
             )
+            logger.info(f"DEBUG cache: stored gaps {paper_id[:8]} in Redis (ttl={ttl})")
             return True
         except Exception as e:
             logger.error(f"Redis cache_gaps error: {e}")
@@ -230,7 +240,9 @@ class RedisStorage:
         try:
             data = await self.client.get(f"gaps:{paper_id}")
             if data:
+                logger.info(f"DEBUG cache: gaps {paper_id[:8]} hit in Redis")
                 return json.loads(data)
+            logger.info(f"DEBUG cache: gaps {paper_id[:8]} miss in Redis")
             return None
         except Exception as e:
             logger.error(f"Redis get_gaps error: {e}")

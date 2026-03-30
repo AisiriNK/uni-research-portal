@@ -103,7 +103,12 @@ class StorageManager:
         embedding: List[float] = None
     ) -> bool:
         """Store paper in ChromaDB"""
-        return await asyncio.to_thread(self.chroma.store_paper, paper_id, paper, embedding)
+        success = await asyncio.to_thread(self.chroma.store_paper, paper_id, paper, embedding)
+        if success:
+            logger.info(f"DEBUG cache: stored paper {paper_id[:8]} in ChromaDB")
+        else:
+            logger.warning(f"DEBUG cache: failed to store paper {paper_id[:8]} in ChromaDB")
+        return success
     
     async def get_paper(self, paper_id: str) -> Optional[Dict]:
         """Get paper from ChromaDB"""
@@ -123,19 +128,19 @@ class StorageManager:
         # Tier 1: Redis cache
         summary = await self.redis.get_summary(paper_id)
         if summary:
-            logger.debug(f"✅ Summary {paper_id[:8]} from Redis")
+            logger.info(f"DEBUG cache: summary {paper_id[:8]} hit in Redis")
             return summary
         
         # Tier 2: ChromaDB permanent storage
         summary = await asyncio.to_thread(self.chroma.get_summary, paper_id)
         if summary:
-            logger.info(f"⚠️ Summary {paper_id[:8]} from ChromaDB (Redis miss)")
+            logger.info(f"DEBUG cache: summary {paper_id[:8]} hit in ChromaDB (Redis miss)")
             # Restore to Redis
             await self.redis.cache_summary(paper_id, summary)
             return summary
         
         # Tier 3: Needs generation
-        logger.info(f"ℹ️ Summary {paper_id[:8]} not cached (will generate)")
+        logger.info(f"DEBUG cache: summary {paper_id[:8]} miss in Redis+ChromaDB")
         return None
     
     async def store_summary(self, paper_id: str, summary: str) -> bool:
@@ -147,13 +152,13 @@ class StorageManager:
         chroma_success = await asyncio.to_thread(self.chroma.store_summary, paper_id, summary)
         
         if redis_success and chroma_success:
-            logger.info(f"✅ Summary {paper_id[:8]} stored in both layers")
+            logger.info(f"DEBUG cache: summary {paper_id[:8]} stored in Redis + ChromaDB")
         elif chroma_success:
-            logger.warning(f"⚠️ Summary {paper_id[:8]} stored only in ChromaDB")
+            logger.warning(f"DEBUG cache: summary {paper_id[:8]} stored only in ChromaDB")
         elif redis_success:
-            logger.warning(f"⚠️ Summary {paper_id[:8]} stored only in Redis")
+            logger.warning(f"DEBUG cache: summary {paper_id[:8]} stored only in Redis")
         else:
-            logger.error(f"❌ Summary {paper_id[:8]} storage failed")
+            logger.error(f"DEBUG cache: summary {paper_id[:8]} storage failed")
         
         return redis_success or chroma_success
     

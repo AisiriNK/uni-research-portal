@@ -1,4 +1,19 @@
 {
-  "indexes": [],
+  "indexes": [
+    {
+      "collectionGroup": "hall_tickets",
+      "queryScope": "Collection",
+      "fields": [
+        {
+          "fieldPath": "usn",
+          "order": "Ascending"
+        },
+        {
+          "fieldPath": "generatedAt",
+          "order": "Descending"
+        }
+      ]
+    }
+  ],
   "fieldOverrides": []
 }

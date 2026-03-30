@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import tempfile
 import zipfile
@@ -20,6 +20,7 @@ import re
 import subprocess
 import sys
 import base64
+from docx import Document
 from dotenv import load_dotenv
 import os
 from pathlib import Path
@@ -61,6 +62,175 @@ app.add_middleware(
 
 # Configuration
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_VALIDATION_MODEL = os.getenv("GROQ_VALIDATION_MODEL", "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
+
+def extract_docx_text_and_stats(content: bytes) -> Dict[str, Any]:
+    doc = Document(io.BytesIO(content))
+    paragraphs = [para.text.strip() for para in doc.paragraphs if para.text.strip()]
+    text = "\n\n".join(paragraphs)
+    image_count = len(doc.inline_shapes)
+
+    figure_captions: List[str] = []
+    table_captions: List[str] = []
+    for para in paragraphs:
+        # Match "Figure N: ..." or "Fig N: ..." or "caption: ..." and extract only the caption text
+        fig_match = re.match(r"^(?:Figure|Fig\.?|caption)\s*[\d.]*\s*[:.-]?\s*(.*)$", para, re.IGNORECASE)
+        if fig_match:
+            caption_text = fig_match.group(1).strip()
+            if caption_text:  # Only add if caption text exists
+                figure_captions.append(caption_text)
+            continue
+        table_match = re.match(r"^Table\s*([\d.]+)\s*[:.-]?\s*(.*)$", para, re.IGNORECASE)
+        if table_match:
+            table_captions.append(para)
+
+    return {
+        "text": text,
+        "paragraphs": paragraphs,
+        "image_count": image_count,
+        "figure_captions": figure_captions,
+        "table_captions": table_captions,
+    }
+
+def build_local_validation_issues(stats: Dict[str, Any]) -> List[Dict[str, str]]:
+    issues: List[Dict[str, str]] = []
+    image_count = stats.get("image_count", 0)
+    figure_captions = stats.get("figure_captions", [])
+    table_captions = stats.get("table_captions", [])
+    paragraphs = stats.get("paragraphs", [])
+
+    if image_count > len(figure_captions):
+        issues.append({
+            "severity": "critical",
+            "label": "Missing figure captions",
+            "message": f"Found {image_count} images but only {len(figure_captions)} figure captions.",
+            "suggestion": "Add a caption line for every figure (e.g., Fig 4.1: ...)."
+        })
+
+    def has_reference(caption_line: str) -> bool:
+        ref = None
+        match = re.match(r"^(Figure|Fig\.?)[\s]*([\d.]+)", caption_line, re.IGNORECASE)
+        if match:
+            ref = match.group(0)
+        if not ref:
+            return False
+        for para in paragraphs:
+            if para.strip() == caption_line.strip():
+                continue
+            if ref in para:
+                return True
+        return False
+
+    for caption in figure_captions:
+        if not has_reference(caption):
+            issues.append({
+                "severity": "warning",
+                "label": "Figure not referenced",
+                "message": f"No explanation paragraph referencing '{caption}'.",
+                "suggestion": "Add a sentence in the text referring to this figure."
+            })
+
+    for caption in table_captions:
+        match = re.match(r"^Table\s*([\d.]+)", caption, re.IGNORECASE)
+        ref = match.group(0) if match else caption
+        referenced = False
+        for para in paragraphs:
+            if para.strip() == caption.strip():
+                continue
+            if ref in para:
+                referenced = True
+                break
+        if not referenced:
+            issues.append({
+                "severity": "warning",
+                "label": "Table not referenced",
+                "message": f"No explanation paragraph referencing '{caption}'.",
+                "suggestion": "Add a sentence in the text referring to this table."
+            })
+
+    if not table_captions:
+        issues.append({
+            "severity": "warning",
+            "label": "Missing table captions",
+            "message": "No table captions were detected.",
+            "suggestion": "Add captions for tables using 'Table X: ...' format."
+        })
+
+    return issues
+
+async def run_groq_validation(text: str, stats: Dict[str, Any]) -> List[Dict[str, str]]:
+    if not GROQ_API_KEY:
+        return [{
+            "severity": "warning",
+            "label": "Validator unavailable",
+            "message": "Groq API key not configured. Local checks only.",
+            "suggestion": "Set GROQ_API_KEY in the .env file."
+        }]
+
+    prompt = f"""You are a report quality validator. Analyze the report text and return JSON only.
+
+Rules:
+- Check spelling errors, capitalization issues, and grammar problems.
+- Check that every figure has a caption and is referenced in an explanation paragraph.
+- Check that every table has a caption and is referenced in an explanation paragraph.
+- Tag issues with severity: warning or critical.
+
+Context:
+Image count: {stats.get('image_count', 0)}
+Figure captions found: {len(stats.get('figure_captions', []))}
+Table captions found: {len(stats.get('table_captions', []))}
+
+Return JSON in this exact shape:
+{{
+  "issues": [
+    {{"severity":"warning|critical","label":"...","message":"...","suggestion":"..."}}
+  ]
+}}
+
+Report text:
+"""
+    prompt = prompt + text[:16000]
+
+    try:
+        from groq import Groq
+        client = Groq(api_key=GROQ_API_KEY)
+        response = client.chat.completions.create(
+            model=GROQ_VALIDATION_MODEL,
+            messages=[
+                {"role": "system", "content": "Return JSON only. Do not include markdown or explanations."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+        )
+        raw = response.choices[0].message.content.strip()
+    except Exception as exc:
+        logger.error("Groq validation failed: %s", exc)
+        return [{
+            "severity": "warning",
+            "label": "Validator unavailable",
+            "message": "Groq validation failed. Local checks only.",
+            "suggestion": "Ensure Groq API is reachable and GROQ_API_KEY is valid."
+        }]
+
+    try:
+        parsed = json.loads(raw)
+        issues = parsed.get("issues", []) if isinstance(parsed, dict) else []
+        return [issue for issue in issues if isinstance(issue, dict)]
+    except json.JSONDecodeError:
+        json_match = re.search(r"\{[\s\S]*\}", raw)
+        if json_match:
+            try:
+                parsed = json.loads(json_match.group(0))
+                issues = parsed.get("issues", []) if isinstance(parsed, dict) else []
+                return [issue for issue in issues if isinstance(issue, dict)]
+            except json.JSONDecodeError:
+                pass
+        return [{
+            "severity": "warning",
+            "label": "Validator output",
+            "message": "Groq returned non-JSON output. Review manually.",
+            "suggestion": "Ensure the Groq model returns valid JSON only."
+        }]
 
 # Pydantic models for API responses
 class AuthorResponse(BaseModel):
@@ -74,6 +244,18 @@ class TeamMember(BaseModel):
 class ProjectDetails(BaseModel):
     title: str
     guide: str
+    guide_designation: str = ""
+    guide_department: str = ""
+    subject_code: str = ""
+    subject_name: str = ""
+    hod_name: str = ""
+    hod_designation: str = ""
+    hod_department: str = ""
+    principal_name: str = ""
+    principal_designation_1: str = ""
+    principal_designation_2: str = ""
+    semester: str = ""
+    abstract_content: str = ""
     year: str
     team_members: List[TeamMember]
 
@@ -550,8 +732,32 @@ def run_report_pipeline(doc_path: str, project_details: ProjectDetails, dept: st
         doc_path,
         "--project-title",
         project_details.title,
+        "--subject-name",
+        project_details.subject_name,
+        "--subject-code",
+        project_details.subject_code,
         "--guide-name",
         project_details.guide,
+        "--guide-designation",
+        project_details.guide_designation,
+        "--guide-department",
+        project_details.guide_department,
+        "--hod-name",
+        project_details.hod_name,
+        "--hod-designation",
+        project_details.hod_designation,
+        "--hod-department",
+        project_details.hod_department,
+        "--principal-name",
+        project_details.principal_name,
+        "--principal-designation-1",
+        project_details.principal_designation_1,
+        "--principal-designation-2",
+        project_details.principal_designation_2,
+        "--semester",
+        project_details.semester,
+        "--abstract-content",
+        project_details.abstract_content,
         "--year",
         project_details.year,
         "--dept",
@@ -666,7 +872,19 @@ def generate_latex_files(project_details: ProjectDetails, chapters: List[Chapter
 async def process_document(
     file: UploadFile = File(...),
     project_title: str = Form(...),
+    subject_code: str = Form(""),
+    subject_name: str = Form(""),
     guide_name: str = Form(...),
+    guide_designation: str = Form(""),
+    guide_department: str = Form(""),
+    hod_name: str = Form(""),
+    hod_designation: str = Form(""),
+    hod_department: str = Form(""),
+    principal_name: str = Form(""),
+    principal_designation: str = Form(""),
+    principal_designation2: str = Form(""),
+    semester: str = Form(""),
+    abstract_content: str = Form(""),
     year: str = Form(...),
     team_members_json: str = Form(...),
     dept: str = Form("")
@@ -689,6 +907,18 @@ async def process_document(
         project_details = ProjectDetails(
             title=project_title,
             guide=guide_name,
+            guide_designation=guide_designation,
+            guide_department=guide_department,
+            subject_code=subject_code,
+            subject_name=subject_name,
+            hod_name=hod_name,
+            hod_designation=hod_designation,
+            hod_department=hod_department,
+            principal_name=principal_name,
+            principal_designation_1=principal_designation,
+            principal_designation_2=principal_designation2,
+            semester=semester,
+            abstract_content=abstract_content,
             year=year,
             team_members=team_members
         )
@@ -804,6 +1034,75 @@ async def process_document(
                 os.remove(temp_file_path)
             except OSError:
                 logger.warning("Failed to remove temp file: %s", temp_file_path)
+
+
+@app.post("/api/validate-document")
+async def validate_document(file: UploadFile = File(...)):
+    try:
+        if not file.filename.endswith(('.doc', '.docx', '.txt')):
+            raise HTTPException(status_code=400, detail="Only .doc, .docx, and .txt files are supported")
+
+        content = await file.read()
+
+        if file.filename.endswith('.docx'):
+            stats = extract_docx_text_and_stats(content)
+            document_text = stats.get("text", "")
+        elif file.filename.endswith('.txt'):
+            document_text = content.decode('utf-8', errors='ignore')
+            stats = {
+                "text": document_text,
+                "paragraphs": [line.strip() for line in document_text.splitlines() if line.strip()],
+                "image_count": 0,
+                "figure_captions": [],
+                "table_captions": [],
+            }
+        else:
+            try:
+                document_text = content.decode('utf-8')
+            except UnicodeDecodeError:
+                document_text = content.decode('latin-1', errors='ignore')
+            stats = {
+                "text": document_text,
+                "paragraphs": [line.strip() for line in document_text.splitlines() if line.strip()],
+                "image_count": 0,
+                "figure_captions": [],
+                "table_captions": [],
+            }
+
+        local_issues = build_local_validation_issues(stats)
+        groq_issues: List[Dict[str, str]] = []
+        if document_text.strip():
+            try:
+                groq_issues = await run_groq_validation(document_text, stats)
+            except Exception as exc:
+                logger.error("Groq validation failed: %s", exc)
+                groq_issues = [{
+                    "severity": "warning",
+                    "label": "Validator unavailable",
+                    "message": "Groq validation failed. Local checks only.",
+                    "suggestion": "Ensure Groq is reachable and GROQ_API_KEY is set."
+                }]
+
+        issues = local_issues + groq_issues
+        critical = sum(1 for issue in issues if issue.get("severity") == "critical")
+        warnings = sum(1 for issue in issues if issue.get("severity") == "warning")
+
+        return JSONResponse(content={
+            "success": True,
+            "issues": issues,
+            "summary": {
+                "critical": critical,
+                "warnings": warnings,
+                "images": stats.get("image_count", 0),
+                "figureCaptions": len(stats.get("figure_captions", [])),
+                "tableCaptions": len(stats.get("table_captions", [])),
+            }
+        })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Validation error: %s", exc)
+        raise HTTPException(status_code=500, detail="Validation failed")
 
 @app.post("/api/download-latex-project")
 async def download_latex_project(
@@ -1091,6 +1390,338 @@ async def mcp_get_context(context_id: str):
         raise
     except Exception as e:
         logger.error(f"Failed to get MCP context: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# HALL TICKET ENDPOINTS
+# ============================================================================
+
+@app.post("/api/hall-tickets/{usn}/generate")
+async def generate_and_store_hall_ticket(usn: str, admin_id: str = Query(...)):
+    """
+    Generate hall ticket PDF, store in Firebase Storage, and save metadata to Firestore
+    
+    Returns:
+        - downloadUrl: URL to download the PDF from Firebase Storage
+        - semesterNumber: Semester for which ticket was generated
+        - generatedAt: Timestamp when ticket was generated
+    """
+    try:
+        import firebase_admin
+        from firebase_admin import credentials, storage, firestore
+        from datetime import datetime
+        import subprocess
+        import json
+        
+        # Initialize Firebase if not already done
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(os.getenv('GOOGLE_APPLICATION_CREDENTIALS'))
+            firebase_admin.initialize_app(cred, {
+                'storageBucket': os.getenv('VITE_FIREBASE_STORAGE_BUCKET')
+            })
+        
+        # Generate hall ticket PDF using existing logic (via subprocess or direct call)
+        # For now, we'll create a simple PDF endpoint
+        logger.info(f"Generating hall ticket for {usn} by admin {admin_id}")
+        
+        # Call frontend's generateHallTicket function via subprocess
+        # This is a workaround - ideally we'd refactor the PDF generation to backend
+        import tempfile
+        
+        pdf_path = f"/tmp/hall_ticket_{usn}_{datetime.now().timestamp()}.pdf"
+        
+        # Generate PDF (placeholder - in real implementation, refactor from frontend)
+        # For now, return error asking to use frontend generation
+        raise HTTPException(
+            status_code=501,
+            detail="Hall ticket PDF generation needs to be called from frontend. Use the downloadHallTicket function, then upload the result to this endpoint."
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to generate hall ticket for {usn}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/hall-tickets/{usn}/upload")
+async def upload_hall_ticket(
+    usn: str,
+    admin_id: str = Query(...),
+    semester_number: int = Query(...),
+    file: UploadFile = File(...)
+):
+    """
+    Upload a generated hall ticket PDF and store metadata in Firestore
+    
+    Request:
+        - file: PDF file content
+        - admin_id: Admin who is uploading
+        - semester_number: Semester for this ticket
+    
+    Returns:
+        - downloadUrl: Firebase Storage download URL
+        - documentId: Firestore document ID
+    """
+    try:
+        import firebase_admin
+        from firebase_admin import credentials, storage, firestore
+        from datetime import datetime
+        
+        # Initialize Firebase
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(os.getenv('GOOGLE_APPLICATION_CREDENTIALS'))
+            firebase_admin.initialize_app(cred, {
+                'storageBucket': os.getenv('VITE_FIREBASE_STORAGE_BUCKET')
+            })
+        
+        # Read PDF file content
+        pdf_content = await file.read()
+        
+        # Upload to Firebase Storage
+        bucket = storage.bucket()
+        timestamp = int(datetime.now().timestamp() * 1000)
+        storage_path = f"hall-tickets/{usn}/{timestamp}.pdf"
+        blob = bucket.blob(storage_path)
+        
+        blob.upload_from_string(
+            pdf_content,
+            content_type='application/pdf'
+        )
+        
+        # Generate download URL (with long expiration)
+        download_url = blob.generate_signed_url(
+            version='v4',
+            expiration=timedelta(days=365),
+            method='GET'
+        )
+        
+        # Save metadata to Firestore
+        db = firestore.client()
+        doc_id = f"{usn}_{semester_number}_{timestamp}"
+        
+        db.collection('hall_tickets').document(doc_id).set({
+            'usn': usn,
+            'semesterNumber': semester_number,
+            'generatedAt': datetime.now(),
+            'generatedBy': admin_id,
+            'pdfUrl': download_url,
+            'storagePath': storage_path,
+            'fileName': file.filename,
+            'fileSize': len(pdf_content)
+        })
+        
+        logger.info(f"Uploaded hall ticket for {usn} to {storage_path}")
+        
+        return {
+            'success': True,
+            'downloadUrl': download_url,
+            'documentId': doc_id,
+            'semesterNumber': semester_number,
+            'generatedAt': datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to upload hall ticket for {usn}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/hall-tickets/{usn}/latest")
+async def get_latest_hall_ticket(usn: str):
+    """
+    Fetch the latest hall ticket for a student
+    
+    Returns:
+        - downloadUrl: URL to download the PDF
+        - semesterNumber: Semester of the ticket
+        - generatedAt: When the ticket was generated
+    """
+    try:
+        import firebase_admin
+        from firebase_admin import credentials, firestore
+        
+        # Initialize Firebase
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(os.getenv('GOOGLE_APPLICATION_CREDENTIALS'))
+            firebase_admin.initialize_app(cred)
+        
+        db = firestore.client()
+        
+        # Query latest hall ticket for this USN
+        query = db.collection('hall_tickets')\
+            .where('usn', '==', usn)\
+            .order_by('generatedAt', direction=firestore.Query.DESCENDING)\
+            .limit(1)
+        
+        docs = query.stream()
+        
+        for doc in docs:
+            data = doc.to_dict()
+            return {
+                'downloadUrl': data.get('pdfUrl'),
+                'semesterNumber': data.get('semesterNumber'),
+                'generatedAt': data.get('generatedAt').isoformat() if data.get('generatedAt') else None,
+                'documentId': doc.id
+            }
+        
+        # No hall ticket found
+        return None
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch hall ticket for {usn}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/hall-tickets/{usn}/all")
+async def get_all_hall_tickets(usn: str):
+    """
+    Fetch all hall tickets for a student
+    
+    Returns:
+        - List of hall tickets with downloadUrl, semesterNumber, generatedAt
+    """
+    try:
+        import firebase_admin
+        from firebase_admin import credentials, firestore
+        
+        # Initialize Firebase
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(os.getenv('GOOGLE_APPLICATION_CREDENTIALS'))
+            firebase_admin.initialize_app(cred)
+        
+        db = firestore.client()
+        
+        # Query all hall tickets for this USN
+        query = db.collection('hall_tickets')\
+            .where('usn', '==', usn)\
+            .order_by('generatedAt', direction=firestore.Query.DESCENDING)
+        
+        docs = query.stream()
+        
+        tickets = []
+        for doc in docs:
+            data = doc.to_dict()
+            tickets.append({
+                'documentId': doc.id,
+                'downloadUrl': data.get('pdfUrl'),
+                'semesterNumber': data.get('semesterNumber'),
+                'generatedAt': data.get('generatedAt').isoformat() if data.get('generatedAt') else None,
+                'generatedBy': data.get('generatedBy')
+            })
+        
+        return tickets
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch hall tickets for {usn}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/api/hall-tickets/backend-save')
+async def save_hall_ticket_to_backend(
+    usn: str = Form(...),
+    semesterNumber: int = Form(...),
+    generatedBy: str = Form(...),
+    file: UploadFile = File(...)
+):
+    """
+    Save hall ticket PDF to backend storage folder
+    """
+    try:
+        # Create storage directory structure
+        storage_dir = Path(__file__).parent / 'storage' / 'hall_tickets' / usn
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Read PDF file content
+        pdf_content = await file.read()
+        
+        # Save with timestamp
+        timestamp = int(datetime.now().timestamp() * 1000)
+        filename = f'HallTicket_Sem{semesterNumber}_{timestamp}.pdf'
+        filepath = storage_dir / filename
+        
+        # Write PDF to disk
+        with open(filepath, 'wb') as f:
+            f.write(pdf_content)
+        
+        logger.info(f"Hall ticket saved for {usn}: {filepath}")
+        
+        return {
+            'success': True,
+            'usn': usn,
+            'semesterNumber': semesterNumber,
+            'fileName': filename,
+            'fileSize': len(pdf_content),
+            'storagePath': str(filepath),
+            'downloadUrl': f'http://localhost:8000/api/hall-tickets/download/{usn}/{filename}'
+        }
+    except Exception as e:
+        logger.error(f"Failed to save hall ticket for {usn}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/api/hall-tickets/download/{usn}/{filename}')
+async def download_hall_ticket(usn: str, filename: str):
+    """
+    Download hall ticket PDF from backend storage
+    """
+    try:
+        filepath = Path(__file__).parent / 'storage' / 'hall_tickets' / usn / filename
+        
+        # Security check: ensure file exists and is in the correct directory
+        if not filepath.exists():
+            raise HTTPException(status_code=404, detail='Hall ticket not found')
+        
+        if not filepath.is_file():
+            raise HTTPException(status_code=400, detail='Invalid file request')
+        
+        # Read and return file
+        with open(filepath, 'rb') as f:
+            pdf_content = f.read()
+        
+        from fastapi.responses import FileResponse
+        return FileResponse(
+            filepath,
+            media_type='application/pdf',
+            filename=filename
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download hall ticket for {usn}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/api/hall-tickets/latest/{usn}')
+async def get_latest_hall_ticket(usn: str):
+    """
+    Get the latest hall ticket file info for a student
+    """
+    try:
+        storage_dir = Path(__file__).parent / 'storage' / 'hall_tickets' / usn
+        
+        if not storage_dir.exists():
+            raise HTTPException(status_code=404, detail='No hall tickets found')
+        
+        # Get all PDFs and find the latest by modification time
+        pdf_files = list(storage_dir.glob('*.pdf'))
+        
+        if not pdf_files:
+            raise HTTPException(status_code=404, detail='No hall tickets found')
+        
+        # Sort by modification time (newest first)
+        latest_file = max(pdf_files, key=lambda p: p.stat().st_mtime)
+        
+        return {
+            'fileName': latest_file.name,
+            'fileSize': latest_file.stat().st_size,
+            'downloadUrl': f'http://localhost:8000/api/hall-tickets/download/{usn}/{latest_file.name}',
+            'modifiedAt': datetime.fromtimestamp(latest_file.stat().st_mtime).isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get latest hall ticket for {usn}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

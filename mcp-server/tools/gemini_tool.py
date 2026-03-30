@@ -8,7 +8,6 @@ from typing import Optional, List, Dict
 import asyncio
 from datetime import datetime
 import google.generativeai as genai
-from google.generativeai import types
 
 from .registry import tool_registry
 from config import settings
@@ -48,11 +47,12 @@ class GeminiRateLimiter:
 gemini_limiter = GeminiRateLimiter(calls_per_minute=settings.GEMINI_RATE_LIMIT)
 
 # Initialize Gemini client
-gemini_client = None
+gemini_model = None
 if settings.GEMINI_API_KEY:
     try:
-        gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        logger.info("✅ Gemini client initialized")
+        genai.configure(api_key=settings.GEMINI_API_KEY)
+        gemini_model = genai.GenerativeModel(settings.GEMINI_MODEL)
+        logger.info("✅ Gemini model initialized")
     except Exception as e:
         logger.error(f"❌ Failed to initialize Gemini: {e}")
 else:
@@ -75,7 +75,7 @@ async def summarize_with_gemini(paper: Dict) -> str:
     Returns:
         Summary text
     """
-    if not gemini_client:
+    if not gemini_model:
         raise ValueError("Gemini API not configured")
     
     try:
@@ -105,9 +105,8 @@ Summary:"""
         
         # Generate using new API
         response = await asyncio.to_thread(
-            gemini_client.models.generate_content,
-            model='gemini-2.0-flash-exp',
-            contents=prompt
+            gemini_model.generate_content,
+            prompt
         )
         
         summary = response.text.strip()

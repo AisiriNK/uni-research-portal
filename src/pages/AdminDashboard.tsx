@@ -157,6 +157,22 @@ const AdminDashboard: React.FC = () => {
   const [examDateSemester, setExamDateSemester] = useState('1');
   const [examDateLoading, setExamDateLoading] = useState(false);
   const [examDateRows, setExamDateRows] = useState<Array<{ subjectCode: string; subjectName: string; examDate: string }>>([]);
+  
+  // Clearance Assignments state
+  const [clearanceAssignmentDialogOpen, setClearanceAssignmentDialogOpen] = useState(false);
+  const [clearanceFilters, setClearanceFilters] = useState({
+    departmentId: isSuperAdmin ? '' : user?.departmentId || '',
+    clearanceType: 'sports', // 'sports' or 'certificate'
+  });
+  const [clearanceAssignmentLoading, setClearanceAssignmentLoading] = useState(false);
+  const [clearanceAssignmentError, setClearanceAssignmentError] = useState<string | null>(null);
+  const [clearanceAssignments, setClearanceAssignments] = useState<Array<{
+    clearanceType: 'sports' | 'certificate';
+    departmentId: string;
+    assignedTeacher?: { employeeId: string; name: string };
+  }>>([]);
+  const [selectedClearanceTeacher, setSelectedClearanceTeacher] = useState<string>('');
+  const [clearanceSubmitting, setClearanceSubmitting] = useState(false);
   const [noDueForm, setNoDueForm] = useState<{
     departmentId: string;
     batchYear: string;
@@ -660,6 +676,7 @@ const AdminDashboard: React.FC = () => {
       const teachersQuery = query(teachersRef, orderBy('employeeId'));
       const snapshot = await getDocs(teachersQuery);
       const records = snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...(docSnap.data() as any) }));
+      console.log('[AdminDashboard] Loaded teachers:', records.length, records);
       setTeacherList(records);
     } catch (error) {
       console.error('Error loading teachers:', error);
@@ -1220,9 +1237,107 @@ const AdminDashboard: React.FC = () => {
   const handleGenerateHallTicket = async (usn: string) => {
     try {
       const adminId = (user as any)?.adminId || user?.uid || user?.email || 'admin';
-      await downloadHallTicket(usn, adminId);
+      
+      // Generate PDF
+      const { generateHallTicket } = await import('@/services/hallTicketService');
+      const pdfBlob = await generateHallTicket(usn, adminId);
+      
+      // Get semester number from student
+      const studentRef = doc(db, 'students', usn);
+      const studentSnap = await getDoc(studentRef);
+      if (!studentSnap.exists()) {
+        throw new Error('Student not found');
+      }
+      const student = studentSnap.data() as any;
+      const academicCtx = await getAcademicContext();
+      const semesterNumber = calculateSemester(student.batchYear, academicCtx.academicYear, academicCtx.semesterType);
+      
+      const timestamp = Date.now();
+      const docId = `${usn}_${semesterNumber}_${timestamp}`;
+      let downloadUrl = '';
+      
+      // Send PDF to backend for storage
+      const formData = new FormData();
+      formData.append('usn', usn);
+      formData.append('semesterNumber', String(semesterNumber));
+      formData.append('generatedBy', adminId);
+      formData.append('file', new File([pdfBlob], `HallTicket_${usn}.pdf`, { type: 'application/pdf' }));
+      
+      try {
+        const backendResponse = await fetch('http://localhost:8000/api/hall-tickets/backend-save', {
+          method: 'POST',
+          body: formData
+        });
+        
+        if (!backendResponse.ok) {
+          throw new Error(`Backend save failed: ${backendResponse.status}`);
+        }
+        
+        const backendData = await backendResponse.json();
+        downloadUrl = backendData.downloadUrl;
+        console.log('[HallTicket] Backend storage successful:', backendData);
+      } catch (backendError: any) {
+        console.error('[HallTicket] Backend save failed:', backendError);
+        throw new Error('Failed to save hall ticket to backend: ' + backendError.message);
+      }
+      
+      // Save metadata to Firestore
+      const { serverTimestamp, updateDoc } = await import('firebase/firestore');
+      
+      console.log('[HallTicket] Saving to Firestore:', {
+        docId,
+        usn,
+        semesterNumber,
+        pdfUrl: downloadUrl,
+        storageMethod: 'backend'
+      });
+      
+      await setDoc(doc(db, 'hall_tickets', docId), {
+        usn,
+        semesterNumber,
+        generatedAt: serverTimestamp(),
+        generatedBy: adminId,
+        pdfUrl: downloadUrl,
+        fileName: `HallTicket_${usn}.pdf`,
+        fileSize: pdfBlob.size,
+        storageMethod: 'backend'
+      });
+      
+      console.log('[HallTicket] Saved to Firestore successfully');
+      
+      // Mark all no_due_requests as hallTicketGenerated
+      try {
+        const { where, getDocs, query } = await import('firebase/firestore');
+        const allRequestsQuery = query(
+          collection(db, 'no_due_requests'),
+          where('usn', '==', usn)
+        );
+        const allRequestsSnap = await getDocs(allRequestsQuery);
+        
+        for (const reqDoc of allRequestsSnap.docs) {
+          await updateDoc(doc(db, 'no_due_requests', reqDoc.id), {
+            hallTicketGenerated: true,
+            hallTicketGeneratedAt: serverTimestamp(),
+            hallTicketGeneratedBy: adminId,
+            status: 'completed'
+          });
+        }
+      } catch (updateError) {
+        console.warn('[HallTicket] Failed to update no_due_requests:', updateError);
+      }
+      
+      // Download for immediate access
+      const url = URL.createObjectURL(pdfBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `HallTicket_${usn}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      
       await loadHallTicketCandidates();
-      toast({ title: 'Hall ticket generated', description: `Downloaded hall ticket for ${usn}.` });
+      toast({ title: 'Hall ticket generated', description: `Generated and stored hall ticket for ${usn}.` });
     } catch (error: any) {
       console.error('Hall ticket generation error:', error);
       toast({ title: 'Generation failed', description: error?.message || 'Unable to generate hall ticket.', variant: 'destructive' });
@@ -1492,6 +1607,125 @@ const AdminDashboard: React.FC = () => {
     }
   };
 
+  const handleSaveClearanceAssignment = async () => {
+    const departmentId = isSuperAdmin ? clearanceFilters.departmentId : user?.departmentId;
+    if (!departmentId) {
+      setClearanceAssignmentError('Please select a department.');
+      return;
+    }
+
+    if (!selectedClearanceTeacher) {
+      setClearanceAssignmentError('Please select a teacher to assign.');
+      return;
+    }
+
+    try {
+      setClearanceSubmitting(true);
+      setClearanceAssignmentError(null);
+
+      // Map clearance type to its typeId
+      const clearanceTypeMap: Record<'sports' | 'certificate', string> = {
+        sports: 'sports',
+        certificate: 'certificate'
+      };
+
+      const clearanceTypeId = clearanceTypeMap[clearanceFilters.clearanceType];
+
+      // Use adminService to update the mapping
+      const { updateCommonClearanceMapping } = await import('@/services/adminService');
+      await updateCommonClearanceMapping(clearanceTypeId, selectedClearanceTeacher, departmentId);
+
+      toast({
+        title: 'Assignment saved',
+        description: `${clearanceFilters.clearanceType} teacher assigned successfully for ${departmentId} department.`,
+      });
+
+      setClearanceAssignmentDialogOpen(false);
+      setSelectedClearanceTeacher('');
+      // Reload the assignments to show the updated list
+      await loadClearanceAssignments(departmentId);
+    } catch (error) {
+      console.error('Error saving clearance assignment:', error);
+      setClearanceAssignmentError('Failed to save assignment. Please try again.');
+      toast({
+        title: 'Save failed',
+        description: 'Could not save clearance assignment.',
+        variant: 'destructive'
+      });
+    } finally {
+      setClearanceSubmitting(false);
+    }
+  };
+
+  const loadClearanceAssignments = async (departmentId: string) => {
+    try {
+      setClearanceAssignmentLoading(true);
+      
+      // Load sports assignment
+      const sportDocId = `${departmentId}_sports`;
+      const sportsRef = doc(db, 'common_clearance_mapping', sportDocId);
+      const sportsSnap = await getDoc(sportsRef);
+      
+      // Load certificate assignment
+      const certDocId = `${departmentId}_certificate`;
+      const certRef = doc(db, 'common_clearance_mapping', certDocId);
+      const certSnap = await getDoc(certRef);
+      
+      const assignments: typeof clearanceAssignments = [];
+      
+      if (sportsSnap.exists()) {
+        const sportsData = sportsSnap.data() as any;
+        try {
+          const teacher = await getTeacher(sportsData.teacherEmployeeId);
+          assignments.push({
+            clearanceType: 'sports',
+            departmentId,
+            assignedTeacher: { employeeId: teacher.employeeId, name: teacher.name }
+          });
+        } catch (e) {
+          assignments.push({
+            clearanceType: 'sports',
+            departmentId,
+            assignedTeacher: { employeeId: sportsData.teacherEmployeeId, name: 'Unknown Teacher' }
+          });
+        }
+      }
+      
+      if (certSnap.exists()) {
+        const certData = certSnap.data() as any;
+        try {
+          const teacher = await getTeacher(certData.teacherEmployeeId);
+          assignments.push({
+            clearanceType: 'certificate',
+            departmentId,
+            assignedTeacher: { employeeId: teacher.employeeId, name: teacher.name }
+          });
+        } catch (e) {
+          assignments.push({
+            clearanceType: 'certificate',
+            departmentId,
+            assignedTeacher: { employeeId: certData.teacherEmployeeId, name: 'Unknown Teacher' }
+          });
+        }
+      }
+      
+      setClearanceAssignments(assignments);
+    } catch (error) {
+      console.error('Error loading clearance assignments:', error);
+    } finally {
+      setClearanceAssignmentLoading(false);
+    }
+  };
+
+  const getTeacher = async (employeeId: string) => {
+    const teacherRef = doc(db, 'teachers', employeeId);
+    const teacherSnap = await getDoc(teacherRef);
+    if (!teacherSnap.exists()) {
+      throw new Error('Teacher not found');
+    }
+    return teacherSnap.data() as any;
+  };
+
   if (!user) {
     return null;
   }
@@ -1695,6 +1929,24 @@ const AdminDashboard: React.FC = () => {
             <CardContent>
               <Button className="w-full" variant="outline" onClick={() => setAssignmentDialogOpen(true)}>
                 View Assignments
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* Clearance Assignments (Sports & Certificate) */}
+          <Card className="hover:shadow-lg transition-shadow cursor-pointer border-l-4 border-l-rose-500">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <Users className="h-10 w-10 text-rose-600" />
+              </div>
+              <CardTitle className="mt-4">Clearance Assignments</CardTitle>
+              <CardDescription>
+                Assign sports and certificate teachers
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button className="w-full" variant="outline" onClick={() => setClearanceAssignmentDialogOpen(true)}>
+                Manage Assignments
               </Button>
             </CardContent>
           </Card>
@@ -2125,6 +2377,151 @@ const AdminDashboard: React.FC = () => {
               <Button onClick={handleSaveExamDates} disabled={examDateLoading}>
                 {examDateLoading ? 'Saving...' : 'Save Dates'}
               </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Clearance Assignment Dialog */}
+        <Dialog 
+          open={clearanceAssignmentDialogOpen} 
+          onOpenChange={(open) => {
+            console.log('[AdminDashboard] Clearance dialog onOpenChange:', { open, teacherListLength: teacherList.length });
+            setClearanceAssignmentDialogOpen(open);
+            if (open) {
+              if (teacherList.length === 0) {
+                console.log('[AdminDashboard] Loading teachers for clearance dialog');
+                loadTeachers();
+              }
+              // Load current assignments
+              const deptId = isSuperAdmin ? clearanceFilters.departmentId : user?.departmentId;
+              if (deptId) {
+                loadClearanceAssignments(deptId);
+              }
+            }
+          }}
+        >
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Clearance Assignments</DialogTitle>
+              <DialogDescription>
+                Assign sports and certificate teachers per department for no-due clearances.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Department</Label>
+                  {isSuperAdmin ? (
+                    <Select
+                      value={clearanceFilters.departmentId}
+                      onValueChange={(value) => setClearanceFilters((prev) => ({ ...prev, departmentId: value }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select department" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {departments
+                          .filter((dept) => dept !== 'ALL')
+                          .map((dept) => (
+                            <SelectItem key={dept} value={dept}>
+                              {dept}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Input value={user?.departmentId || 'N/A'} disabled className="bg-gray-100" />
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <Label>Clearance Type</Label>
+                  <Select
+                    value={clearanceFilters.clearanceType}
+                    onValueChange={(value) => setClearanceFilters((prev) => ({ ...prev, clearanceType: value as 'sports' | 'certificate' }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="sports">Sports</SelectItem>
+                      <SelectItem value="certificate">Certificate</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Assigned Teacher</Label>
+                <Select value={selectedClearanceTeacher} onValueChange={setSelectedClearanceTeacher}>
+                  <SelectTrigger>
+                    <SelectValue placeholder={teacherList.length === 0 ? 'Loading teachers...' : 'Select a teacher'} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {teacherList.length === 0 ? (
+                      <div className="px-2 py-2 text-xs text-muted-foreground">No teachers available</div>
+                    ) : (
+                      teacherList.map((teacher) => (
+                        <SelectItem key={teacher.employeeId} value={teacher.employeeId}>
+                          {teacher.name} ({teacher.employeeId})
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {clearanceFilters.clearanceType === 'sports' && 'Sports teacher will review all sports clearance requests from this department'}
+                  {clearanceFilters.clearanceType === 'certificate' && 'Certificate coordinator will review all certificate requests from this department'}
+                </p>
+              </div>
+
+              {clearanceAssignmentError && (
+                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                  {clearanceAssignmentError}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-4">
+                <Button variant="outline" onClick={() => setClearanceAssignmentDialogOpen(false)} disabled={clearanceSubmitting}>
+                  Cancel
+                </Button>
+                <Button 
+                  onClick={handleSaveClearanceAssignment} 
+                  disabled={clearanceSubmitting || !selectedClearanceTeacher}
+                >
+                  {clearanceSubmitting ? 'Saving...' : 'Save Assignment'}
+                </Button>
+              </div>
+
+              {/* Current Assignments Section */}
+              <div className="mt-6 pt-6 border-t">
+                <h4 className="font-semibold text-sm mb-3">Current Assignments for {clearanceFilters.departmentId || (user?.departmentId || 'Department')}</h4>
+                {clearanceAssignmentLoading ? (
+                  <div className="text-sm text-muted-foreground">Loading assignments...</div>
+                ) : clearanceAssignments.length === 0 ? (
+                  <div className="text-sm text-muted-foreground">No assignments set yet</div>
+                ) : (
+                  <div className="space-y-2">
+                    {clearanceAssignments.map((assignment) => (
+                      <div key={assignment.clearanceType} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                        <div>
+                          <p className="font-medium capitalize text-sm">{assignment.clearanceType}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {assignment.assignedTeacher?.name} ({assignment.assignedTeacher?.employeeId})
+                          </p>
+                        </div>
+                        <div className="text-xs text-green-600 font-medium">✓ Assigned</div>
+                      </div>
+                    ))}
+                    {clearanceAssignments.length === 1 && (
+                      <div className="text-xs text-muted-foreground p-3 bg-gray-50 rounded-lg">
+                        {clearanceAssignments[0].clearanceType === 'sports' 
+                          ? 'Certificate coordinator not assigned yet' 
+                          : 'Sports coordinator not assigned yet'}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </DialogContent>
         </Dialog>

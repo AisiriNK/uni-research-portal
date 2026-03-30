@@ -200,6 +200,20 @@ class MCPClient {
   }
 
   /**
+   * Summarize a paper using MCP server (cached)
+   */
+  async summarizePaper(paper: { id: string; title: string; abstract: string }): Promise<{ paper_id: string; summary: any; cached: boolean }> {
+    return this.request('/tools/summarize-paper', {
+      method: 'POST',
+      body: JSON.stringify({
+        paper_id: paper.id,
+        title: paper.title,
+        abstract: paper.abstract
+      })
+    });
+  }
+
+  /**
    * Get execution trace
    */
   async getExecutionTrace(contextId: string): Promise<{
