@@ -52,18 +52,31 @@ export function AIPaperSummary({ paper, onClose }: AIPaperSummaryProps) {
       let parsedSummary: PaperSummary
       
       if (typeof result.summary === 'string') {
-        // Plain text summary from MCP server - structure it
-        parsedSummary = {
-          overview: result.summary,
-          keyFindings: result.summary.split('\n').filter((line: string) => line.trim().length > 0).slice(0, 3),
-          techniques: [],
-          advantages: [],
+        // Check if it's a JSON string
+        try {
+          const parsed = JSON.parse(result.summary)
+          // Validate it has the required structure
+          if (parsed.overview && parsed.techniques && parsed.advantages) {
+            console.log('✅ [SUMMARY] Parsed valid JSON from string:', parsed)
+            parsedSummary = parsed
+          } else {
+            throw new Error('Invalid summary structure')
+          }
+        } catch (parseErr) {
+          // Not JSON or invalid - treat as plain text summary
+          console.log('📝 [SUMMARY] Treating as plain text summary:', result.summary)
+          parsedSummary = {
+            overview: result.summary,
+            keyFindings: result.summary.split('\n').filter((line: string) => line.trim().length > 0).slice(0, 3),
+            techniques: [],
+            advantages: [],
           limitations: [],
           methodology: '',
           futureWork: ''
+          }
         }
       } else {
-        // Already structured JSON
+        // Already structured object from MCP
         parsedSummary = result.summary as PaperSummary
       }
       

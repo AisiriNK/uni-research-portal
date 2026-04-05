@@ -92,19 +92,32 @@ async def summarize_with_gemini(paper: Dict) -> str:
         if not abstract:
             abstract = "No abstract available"
         
-        prompt = f"""Summarize this research paper concisely:
+        prompt = f"""You are an expert academic researcher and technical analyst. Analyze the paper below and respond with ONLY a valid JSON object. Do not include any markdown, code blocks, explanations, or text outside the JSON.
 
+**PAPER TO ANALYZE:**
 Title: {title}
-
 Abstract: {abstract}
 
-Provide a 3-4 sentence summary covering:
-1. Main research problem
-2. Methodology approach
-3. Key findings
-4. Significance/impact
+**REQUIREMENTS:**
+- Output MUST be valid JSON only
+- Do not wrap JSON in markdown code blocks or backticks
+- Do not include text before or after the JSON object
+- All arrays must have at least 3-4 substantial items each
+- All strings must be detailed and specific
+- Never use placeholder text like "not specified" or "to be determined"
 
-Summary:"""
+**OUTPUT JSON STRUCTURE:**
+{{
+  "overview": "4 sentences: What problem does this paper solve? What is the key contribution? Why is it significant? What is the scientific impact?",
+  "techniques": ["Specific technique/method 1 with brief explanation", "Specific technique/method 2 with brief explanation", "Specific technique/method 3 with brief explanation", "Specific technique/method 4 with brief explanation"],
+  "advantages": ["Specific advantage 1: How it improves over existing work", "Specific advantage 2: Unique contribution", "Specific advantage 3: Performance or scalability benefit", "Specific advantage 4: Novel approach or insight"],
+  "limitations": ["Specific limitation 1: Constraint or assumption", "Specific limitation 2: Scope or resource limitation", "Specific limitation 3: Area for improvement"],
+  "keyFindings": ["Finding 1: Main result or discovery", "Finding 2: Secondary important result", "Finding 3: Unexpected or notable result", "Finding 4: Practical implication"],
+  "methodology": "Detailed description of the research methodology, approach, and experimental design. Include the main steps and what makes this approach unique.",
+  "futureWork": "2-3 specific next steps: How could this work be extended? What problems remain? What new research directions does this open?"
+}}
+
+Generate the JSON response now. Output ONLY the JSON object, nothing else."""
         
         # Generate using new API
         response = await asyncio.to_thread(
@@ -112,7 +125,48 @@ Summary:"""
             prompt
         )
         
-        summary = response.text.strip()
+        response_text = response.text.strip()
+        logger.info(f"📝 Gemini raw response (first 500 chars): {response_text[:500]}")
+        logger.info(f"📝 Gemini full response: {response_text}")
+        
+        # Parse JSON from response
+        import json
+        try:
+            # Extract JSON if wrapped in markdown code blocks
+            if "```json" in response_text:
+                logger.info("🔍 Detected ```json markdown block, removing...")
+                response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                logger.info("🔍 Detected ``` markdown block, removing...")
+                response_text = response_text.split("```")[1].split("```")[0].strip()
+            
+            logger.info(f"🔍 Cleaned response before parsing (first 200 chars): {response_text[:200]}")
+            
+            # Find JSON bounds
+            start = response_text.find('{')
+            end = response_text.rfind('}')
+            logger.info(f"🔍 Found JSON bounds: start={start}, end={end}")
+            
+            if start != -1 and end != -1 and end > start:
+                json_str = response_text[start:end+1]
+                logger.info(f"🔍 Extracted JSON candidate (first 300 chars): {json_str[:300]}")
+                
+                # Parse JSON
+                parsed = json.loads(json_str)
+                logger.info(f"✅ JSON parsed successfully!")
+                logger.info(f"📊 Parsed object keys: {list(parsed.keys())}")
+                logger.info(f"📊 Full parsed object: {parsed}")
+                
+                # Return as JSON string (will be serialized by FastAPI)
+                return json.dumps(parsed)
+            else:
+                logger.error(f"❌ Invalid JSON bounds found")
+                raise ValueError("Could not find valid JSON in response")
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Failed to parse Gemini response as JSON: {e}")
+            logger.error(f"Response text: {response_text}")
+            raise
         
         logger.info(f"✅ Gemini summary generated ({len(summary)} chars)")
         return summary
@@ -159,19 +213,32 @@ async def _groq_summarize(paper: Dict) -> str:
     if not abstract:
         abstract = "No abstract available"
     
-    prompt = f"""Summarize this research paper concisely:
+    prompt = f"""You are an expert academic researcher and technical analyst. Analyze the paper below and respond with ONLY a valid JSON object. Do not include any markdown, code blocks, explanations, or text outside the JSON.
 
+**PAPER TO ANALYZE:**
 Title: {title}
-
 Abstract: {abstract}
 
-Provide a 3-4 sentence summary covering:
-1. Main research problem
-2. Methodology approach
-3. Key findings
-4. Significance/impact
+**REQUIREMENTS:**
+- Output MUST be valid JSON only
+- Do not wrap JSON in markdown code blocks or backticks
+- Do not include text before or after the JSON object
+- All arrays must have at least 3-4 substantial items each
+- All strings must be detailed and specific
+- Never use placeholder text like "not specified" or "to be determined"
 
-Summary:"""
+**OUTPUT JSON STRUCTURE:**
+{{
+  "overview": "4 sentences: What problem does this paper solve? What is the key contribution? Why is it significant? What is the scientific impact?",
+  "techniques": ["Specific technique/method 1 with brief explanation", "Specific technique/method 2 with brief explanation", "Specific technique/method 3 with brief explanation", "Specific technique/method 4 with brief explanation"],
+  "advantages": ["Specific advantage 1: How it improves over existing work", "Specific advantage 2: Unique contribution", "Specific advantage 3: Performance or scalability benefit", "Specific advantage 4: Novel approach or insight"],
+  "limitations": ["Specific limitation 1: Constraint or assumption", "Specific limitation 2: Scope or resource limitation", "Specific limitation 3: Area for improvement"],
+  "keyFindings": ["Finding 1: Main result or discovery", "Finding 2: Secondary important result", "Finding 3: Unexpected or notable result", "Finding 4: Practical implication"],
+  "methodology": "Detailed description of the research methodology, approach, and experimental design. Include the main steps and what makes this approach unique.",
+  "futureWork": "2-3 specific next steps: How could this work be extended? What problems remain? What new research directions does this open?"
+}}
+
+Generate the JSON response now. Output ONLY the JSON object, nothing else."""
     
     for attempt in range(MAX_RETRIES):
         try:
@@ -181,13 +248,54 @@ Summary:"""
                 lambda: client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=0.5,
+                    temperature=0.7,
+                    max_tokens=2048,
                 )
             )
             
-            summary = response.choices[0].message.content.strip()
-            logger.info(f"✅ Groq summary generated ({len(summary)} chars)")
-            return summary
+            response_text = response.choices[0].message.content.strip()
+            logger.info(f"📝 Groq raw response (first 500 chars): {response_text[:500]}")
+            logger.info(f"📝 Groq full response: {response_text}")
+            
+            # Parse JSON from response
+            import json
+            try:
+                # Extract JSON if wrapped in markdown code blocks
+                if "```json" in response_text:
+                    logger.info("🔍 Detected ```json markdown block, removing...")
+                    response_text = response_text.split("```json")[1].split("```")[0].strip()
+                elif "```" in response_text:
+                    logger.info("🔍 Detected ``` markdown block, removing...")
+                    response_text = response_text.split("```")[1].split("```")[0].strip()
+                
+                logger.info(f"🔍 Cleaned response before parsing (first 200 chars): {response_text[:200]}")
+                
+                # Find JSON bounds
+                start = response_text.find('{')
+                end = response_text.rfind('}')
+                logger.info(f"🔍 Found JSON bounds: start={start}, end={end}")
+                
+                if start != -1 and end != -1 and end > start:
+                    json_str = response_text[start:end+1]
+                    logger.info(f"🔍 Extracted JSON candidate (first 300 chars): {json_str[:300]}")
+                    
+                    # Parse JSON
+                    parsed = json.loads(json_str)
+                    logger.info(f"✅ JSON parsed successfully!")
+                    logger.info(f"📊 Parsed object keys: {list(parsed.keys())}")
+                    logger.info(f"📊 Full parsed object: {parsed}")
+                    
+                    # Return as JSON string (will be serialized by FastAPI)
+                    logger.info(f"✅ Groq summary generated ({len(json.dumps(parsed))} chars)")
+                    return json.dumps(parsed)
+                else:
+                    logger.error(f"❌ Invalid JSON bounds found")
+                    raise ValueError("Could not find valid JSON in response")
+                    
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ Failed to parse Groq response as JSON: {e}")
+                logger.error(f"Response text: {response_text}")
+                raise
             
         except Exception as e:
             error_str = str(e)

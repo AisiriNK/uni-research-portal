@@ -333,29 +333,84 @@ async def tool_summarize_paper(request: SummarizeRequest):
                             title = request.title or "Unknown"
                             abstract = request.abstract or "No abstract available"
                             
-                            prompt = f"""Summarize this research paper concisely:
+                            prompt = f"""You are an expert academic researcher and technical analyst. Analyze the paper below and respond with ONLY a valid JSON object. Do not include any markdown, code blocks, explanations, or text outside the JSON.
 
+**PAPER TO ANALYZE:**
 Title: {title}
-
 Abstract: {abstract}
 
-Provide a 3-4 sentence summary covering:
-1. Main research problem
-2. Methodology approach
-3. Key findings
-4. Significance/impact
+**REQUIREMENTS:**
+- Output MUST be valid JSON only
+- Do not wrap JSON in markdown code blocks or backticks
+- Do not include text before or after the JSON object
+- All arrays must have at least 3-4 substantial items each
+- All strings must be detailed and specific
+- Never use placeholder text like "not specified" or "to be determined"
 
-Summary:"""
+**OUTPUT JSON STRUCTURE:**
+{{
+  "overview": "4 sentences: What problem does this paper solve? What is the key contribution? Why is it significant? What is the scientific impact?",
+  "techniques": ["Specific technique/method 1 with brief explanation", "Specific technique/method 2 with brief explanation", "Specific technique/method 3 with brief explanation", "Specific technique/method 4 with brief explanation"],
+  "advantages": ["Specific advantage 1: How it improves over existing work", "Specific advantage 2: Unique contribution", "Specific advantage 3: Performance or scalability benefit", "Specific advantage 4: Novel approach or insight"],
+  "limitations": ["Specific limitation 1: Constraint or assumption", "Specific limitation 2: Scope or resource limitation", "Specific limitation 3: Area for improvement"],
+  "keyFindings": ["Finding 1: Main result or discovery", "Finding 2: Secondary important result", "Finding 3: Unexpected or notable result", "Finding 4: Practical implication"],
+  "methodology": "Detailed description of the research methodology, approach, and experimental design. Include the main steps and what makes this approach unique.",
+  "futureWork": "2-3 specific next steps: How could this work be extended? What problems remain? What new research directions does this open?"
+}}
+
+Generate the JSON response now. Output ONLY the JSON object, nothing else."""
                             
                             response = await asyncio.to_thread(
                                 lambda: client.chat.completions.create(
                                     model="llama-3.3-70b-versatile",
-                                    messages=[{"role": "user", "content": prompt}],
-                                    temperature=0.5,
+                                    messages=[
+                                        {
+                                            "role": "system",
+                                            "content": "You are an expert academic researcher. Return ONLY valid JSON, no markdown, no explanations."
+                                        },
+                                        {
+                                            "role": "user",
+                                            "content": prompt
+                                        }
+                                    ],
+                                    temperature=0.7,
+                                    max_tokens=2048,
                                 )
                             )
                             
-                            summary = response.choices[0].message.content.strip()
+                            response_text = response.choices[0].message.content.strip()
+                            logger.info(f"Groq raw response (first 500 chars): {response_text[:500]}")
+                            logger.info(f"Groq full response: {response_text}")
+                            
+                            # Parse JSON from response
+                            import json
+                            try:
+                                # Extract JSON if wrapped in markdown code blocks
+                                if "```json" in response_text:
+                                    logger.info("Detected ```json markdown block, removing...")
+                                    response_text = response_text.split("```json")[1].split("```")[0].strip()
+                                elif "```" in response_text:
+                                    logger.info("Detected ``` markdown block, removing...")
+                                    response_text = response_text.split("```")[1].split("```")[0].strip()
+                                
+                                logger.info(f"Cleaned response before parsing: {response_text[:500]}")
+                                parsed = json.loads(response_text)
+                                logger.info(f"✅ Successfully parsed Groq JSON response")
+                                logger.info(f"Parsed object keys: {list(parsed.keys())}")
+                                summary = parsed
+                            except json.JSONDecodeError as e:
+                                logger.error(f"❌ Failed to parse Groq response as JSON: {e}")
+                                logger.error(f"Response text: {response_text}")
+                                # Fallback: return structured data
+                                summary = {
+                                    "overview": response_text,
+                                    "techniques": ["Advanced research methodology"],
+                                    "advantages": ["Contributes to scientific knowledge"],
+                                    "limitations": ["Further research needed"],
+                                    "keyFindings": ["Research findings"],
+                                    "methodology": response_text,
+                                    "futureWork": "Future research directions"
+                                }
                             logger.info(f"✅ Summary generated successfully via Groq fallback")
                             break
                             
