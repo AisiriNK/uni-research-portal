@@ -20,6 +20,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/config/firebase';
 import { NoDueRequest, Student, Curriculum } from '@/types/schema';
+import { getStudentBacklogs } from './backlogService';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
 
@@ -123,6 +124,29 @@ async function getHallTicketData(usn: string): Promise<HallTicketData> {
         subjectName: curr.subjectName,
         examDate: examDates.get(String(curr.subjectCode).toUpperCase()) || '',
       });
+    }
+    
+    // Add backlog subjects (without exam dates)
+    try {
+      const backlogs = await getStudentBacklogs(usn);
+      for (const backlog of backlogs) {
+        // Check if this backlog subject already exists in regular subjects
+        const subjectExists = subjects.some(
+          (s) => s.subjectCode.toUpperCase() === backlog.subjectCode.toUpperCase()
+        );
+        
+        // Only add if it's not already in the regular subjects
+        if (!subjectExists) {
+          subjects.push({
+            subjectCode: backlog.subjectCode,
+            subjectName: backlog.subjectName,
+            examDate: undefined, // No exam date for backlogs as per requirement
+          });
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to fetch backlogs for hall ticket:', error);
+      // Continue without backlogs if fetch fails
     }
     
     // Sort subjects by code

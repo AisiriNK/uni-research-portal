@@ -47,7 +47,27 @@ export function AIPaperSummary({ paper, onClose }: AIPaperSummaryProps) {
         title: paper.title,
         abstract: paper.abstract || ''
       })
-      setSummary(result.summary as PaperSummary)
+      
+      // Handle different response formats
+      let parsedSummary: PaperSummary
+      
+      if (typeof result.summary === 'string') {
+        // Plain text summary from MCP server - structure it
+        parsedSummary = {
+          overview: result.summary,
+          keyFindings: result.summary.split('\n').filter((line: string) => line.trim().length > 0).slice(0, 3),
+          techniques: [],
+          advantages: [],
+          limitations: [],
+          methodology: '',
+          futureWork: ''
+        }
+      } else {
+        // Already structured JSON
+        parsedSummary = result.summary as PaperSummary
+      }
+      
+      setSummary(parsedSummary)
       
       toast({
         title: "AI Summary Generated",
@@ -163,12 +183,16 @@ export function AIPaperSummary({ paper, onClose }: AIPaperSummaryProps) {
                       Key Findings
                     </h3>
                     <div className="space-y-2">
-                      {summary.keyFindings.map((finding, index) => (
-                        <div key={index} className="flex items-start gap-2 p-3 bg-muted/50 rounded-lg">
-                          <CheckCircle className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
-                          <span className="text-sm">{finding}</span>
-                        </div>
-                      ))}
+                      {summary.keyFindings && summary.keyFindings.length > 0 ? (
+                        summary.keyFindings.map((finding, index) => (
+                          <div key={index} className="flex items-start gap-2 p-3 bg-muted/50 rounded-lg">
+                            <CheckCircle className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+                            <span className="text-sm">{finding}</span>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-sm text-muted-foreground">No specific key findings available</p>
+                      )}
                     </div>
                   </div>
                 </TabsContent>
@@ -180,11 +204,15 @@ export function AIPaperSummary({ paper, onClose }: AIPaperSummaryProps) {
                       Techniques & Methods
                     </h3>
                     <div className="grid gap-2">
-                      {summary.techniques.map((technique, index) => (
-                        <Badge key={index} variant="secondary" className="justify-start p-2 h-auto">
-                          {technique}
-                        </Badge>
-                      ))}
+                      {summary.techniques && summary.techniques.length > 0 ? (
+                        summary.techniques.map((technique, index) => (
+                          <Badge key={index} variant="secondary" className="justify-start p-2 h-auto">
+                            {technique}
+                          </Badge>
+                        ))
+                      ) : (
+                        <p className="text-sm text-muted-foreground">No specific techniques listed</p>
+                      )}
                     </div>
                   </div>
 
@@ -206,11 +234,15 @@ export function AIPaperSummary({ paper, onClose }: AIPaperSummaryProps) {
                         Advantages
                       </h3>
                       <div className="space-y-2">
-                        {summary.advantages.map((advantage, index) => (
-                          <div key={index} className="flex items-start gap-2 p-3 bg-green-50 border border-green-200 rounded-lg">
-                            <span className="text-sm">{advantage}</span>
-                          </div>
-                        ))}
+                        {summary.advantages && summary.advantages.length > 0 ? (
+                          summary.advantages.map((advantage, index) => (
+                            <div key={index} className="flex items-start gap-2 p-3 bg-green-50 border border-green-200 rounded-lg">
+                              <span className="text-sm">{advantage}</span>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="text-sm text-muted-foreground">No specific advantages listed</p>
+                        )}
                       </div>
                     </div>
 
@@ -220,11 +252,15 @@ export function AIPaperSummary({ paper, onClose }: AIPaperSummaryProps) {
                         Limitations
                       </h3>
                       <div className="space-y-2">
-                        {summary.limitations.map((limitation, index) => (
-                          <div key={index} className="flex items-start gap-2 p-3 bg-orange-50 border border-orange-200 rounded-lg">
-                            <span className="text-sm">{limitation}</span>
-                          </div>
-                        ))}
+                        {summary.limitations && summary.limitations.length > 0 ? (
+                          summary.limitations.map((limitation, index) => (
+                            <div key={index} className="flex items-start gap-2 p-3 bg-orange-50 border border-orange-200 rounded-lg">
+                              <span className="text-sm">{limitation}</span>
+                            </div>
+                          ))
+                        ) : (
+                          <p className="text-sm text-muted-foreground">No specific limitations listed</p>
+                        )}
                       </div>
                     </div>
                   </div>

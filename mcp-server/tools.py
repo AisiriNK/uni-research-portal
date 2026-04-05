@@ -359,11 +359,12 @@ Respond in JSON format: {{"paper_id": "category", ...}}"""
 
 async def summarize_with_gemini_handler(context_id: str, input_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Summarize clusters using Gemini API with real implementation.
+    Summarize clusters using Gemini API with Groq fallback on quota exceeded.
     Input: { "cluster_id": str, "paper_ids": List[str], "abstracts": List[str] }
     Output: { "summary": str, "key_topics": List[str] }
     """
     import os
+    import json
     import google.generativeai as genai
     
     cluster_id = input_data.get("cluster_id", "")
@@ -375,7 +376,11 @@ async def summarize_with_gemini_handler(context_id: str, input_data: Dict[str, A
     # Check for Gemini API key
     gemini_api_key = os.getenv("GEMINI_API_KEY")
     if not gemini_api_key or not abstracts:
-        logger.warning("GEMINI_API_KEY not set or no abstracts, using mock summarization")
+        logger.warning("GEMINI_API_KEY not set or no abstracts, using Groq or mock")
+        # Try Groq fallback
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        if groq_api_key:
+            return await _summarize_with_groq(cluster_id, paper_ids, abstracts, groq_api_key)
         # Fallback to mock
         summary = f"This cluster contains {len(paper_ids)} papers focusing on advanced research topics. " \
                   f"The papers explore various aspects of the domain with innovative methodologies."
@@ -385,7 +390,7 @@ async def summarize_with_gemini_handler(context_id: str, input_data: Dict[str, A
     try:
         # Configure Gemini
         genai.configure(api_key=gemini_api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        model = genai.GenerativeModel('gemini-2.0-flash')
         
         # Prepare abstracts text (limit to first 10 abstracts to avoid token limits)
         abstracts_text = "\n\n".join([f"Paper {i+1}: {abs}" for i, abs in enumerate(abstracts[:10]) if abs])
@@ -407,7 +412,6 @@ Respond in JSON format:
         response = model.generate_content(prompt)
         
         # Parse JSON response
-        import json
         try:
             result = json.loads(response.text)
             summary = result.get("summary", "Summary not available")
@@ -417,12 +421,100 @@ Respond in JSON format:
             summary = response.text[:300] if response.text else "Summary generation failed"
             key_topics = ["Machine Learning", "Research", "Analysis"]
         
-        logger.info(f"Generated summary for cluster {cluster_id}")
+        logger.info(f"Generated summary for cluster {cluster_id} using Gemini")
         return {"summary": summary, "key_topics": key_topics}
         
     except Exception as e:
-        logger.error(f"Gemini summarization failed: {e}, falling back to mock")
+        error_str = str(e)
+        error_lower = error_str.lower()
+        
+        # Check if it's a quota/rate limit error (including APIError with resource exhausted)
+        is_quota_error = (
+            "429" in error_str or 
+            "quota" in error_lower or 
+            "rate" in error_lower or
+            "resource_exhausted" in error_lower or
+            "exceeded" in error_lower
+        )
+        
+        logger.warning(f"Gemini error: {e} (quota_error={is_quota_error})")
+        
+        if is_quota_error:
+            logger.warning(f"Gemini quota exceeded, falling back to Groq")
+            groq_api_key = os.getenv("GROQ_API_KEY")
+            if groq_api_key:
+                try:
+                    return await _summarize_with_groq(cluster_id, paper_ids, abstracts, groq_api_key)
+                except Exception as groq_error:
+                    logger.error(f"Groq fallback also failed: {groq_error}")
+        
+        logger.error(f"Gemini summarization failed: {e}, using mock response")
         # Fallback to mock
+        summary = f"This cluster contains {len(paper_ids)} papers focusing on advanced research topics."
+        key_topics = ["Machine Learning", "Deep Learning", "Neural Networks", "Optimization"]
+        return {"summary": summary, "key_topics": key_topics}
+
+
+async def _summarize_with_groq(cluster_id: str, paper_ids: List[str], abstracts: List[str], groq_api_key: str) -> Dict[str, Any]:
+    """Fallback: Summarize using Groq API"""
+    try:
+        from groq import Groq
+        import json
+        
+        client = Groq(api_key=groq_api_key)
+        
+        # Prepare abstracts text
+        abstracts_text = "\n\n".join([f"Paper {i+1}: {abs}" for i, abs in enumerate(abstracts[:10]) if abs])
+        
+        # Create summarization prompt
+        prompt = f"""Analyze the following research papers and provide:
+1. A concise summary of the main research themes (2-3 sentences)
+2. Key topics covered (list 4-6 topics)
+
+Research Papers:
+{abstracts_text}
+
+Respond in JSON format:
+{{
+  "summary": "...",
+  "key_topics": ["topic1", "topic2", ...]
+}}"""
+        
+        response = client.chat.completions.create(
+            model="mixtral-8x7b-32768",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5,
+        )
+        
+        response_text = response.choices[0].message.content
+        
+        # Parse JSON response
+        try:
+            result = json.loads(response_text)
+            summary = result.get("summary", "Summary not available")
+            key_topics = result.get("key_topics", [])
+        except json.JSONDecodeError:
+            # Try to extract JSON
+            import re
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                try:
+                    result = json.loads(json_match.group())
+                    summary = result.get("summary", response_text[:300])
+                    key_topics = result.get("key_topics", [])
+                except json.JSONDecodeError:
+                    summary = response_text[:300]
+                    key_topics = ["Research", "Analysis"]
+            else:
+                summary = response_text[:300]
+                key_topics = ["Research", "Analysis"]
+        
+        logger.info(f"Generated summary for cluster {cluster_id} using Groq fallback")
+        return {"summary": summary, "key_topics": key_topics}
+        
+    except Exception as e:
+        logger.error(f"Groq summarization also failed: {e}")
+        # Final fallback to mock
         summary = f"This cluster contains {len(paper_ids)} papers focusing on advanced research topics."
         key_topics = ["Machine Learning", "Deep Learning", "Neural Networks", "Optimization"]
         return {"summary": summary, "key_topics": key_topics}

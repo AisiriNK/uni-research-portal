@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { LogOut, User, Mail, Briefcase, Building2 } from 'lucide-react';
+import { DepartmentCertificatesViewer } from '@/components/DepartmentCertificatesViewer';
 
 const TeacherDashboard: React.FC = () => {
   const { user, logout } = useAuth();
@@ -129,6 +130,9 @@ const TeacherDashboard: React.FC = () => {
               </Button>
             </CardContent>
           </Card>
+
+          {/* Department Certificates */}
+          <DepartmentCertificatesViewer />
         </div>
       </div>
     </div>

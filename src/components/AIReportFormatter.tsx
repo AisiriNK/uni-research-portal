@@ -55,6 +55,9 @@ interface ValidationIssue {
   label: string
   message: string
   suggestion?: string
+  location?: string
+  example?: string
+  correction?: string
 }
 
 interface ValidationSummary {
@@ -461,13 +464,36 @@ export function AIReportFormatter() {
       : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
   }
 
+  const handleDownloadTemplate = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/api/templates/report-content-format')
+      
+      if (!response.ok) {
+        throw new Error('Failed to download template')
+      }
+      
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'report_content_format.docx'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('Error downloading template:', error)
+      alert('Failed to download template. Please try again.')
+    }
+  }
+
   return (
     <div className="h-full bg-background">
       <div className="p-6">
         <div className="mb-6">
           <h2 className="text-2xl font-bold text-academic-navy mb-2">Automated Document Processor</h2>
           <p className="text-academic-gray">
-            Convert Word documents to LaTeX using AI - Upload source document (.doc/.docx) and template (.tex)
+            Convert Word documents to Typst using AI - Upload source document (.doc/.docx) 
           </p>
         </div>
 
@@ -505,6 +531,24 @@ export function AIReportFormatter() {
                       </div>
                     )}
                   </div>
+                  
+                  <div className="pt-4 border-t">
+                    <h4 className="text-sm font-medium mb-3 flex items-center gap-2">
+                      <FileText size={16} />
+                      Report Template
+                    </h4>
+                    <p className="text-xs text-muted-foreground mb-3">
+                      Download the report content format template to use as a reference for your report structure
+                    </p>
+                    <Button 
+                      onClick={handleDownloadTemplate}
+                      variant="outline"
+                      className="w-full"
+                    >
+                      <Download className="mr-2 h-4 w-4" />
+                      Download Report Content Format Template
+                    </Button>
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -533,7 +577,7 @@ export function AIReportFormatter() {
                     <Label htmlFor="year">Academic Year</Label>
                     <Input
                       id="year"
-                      placeholder="Enter academic year (e.g., 2025-2026)"
+                      placeholder="Enter academic year (e.g., 2025-26)"
                       className="mt-1"
                       value={year}
                       onChange={(e) => setYear(e.target.value)}
@@ -904,11 +948,26 @@ export function AIReportFormatter() {
                         >
                           {issue.severity.toUpperCase()}
                         </Badge>
-                        <div className="space-y-1">
+                        <div className="space-y-2 flex-1">
                           <p className="text-sm font-medium">{issue.label}</p>
                           <p className="text-sm text-muted-foreground">{issue.message}</p>
+                          {issue.location && (
+                            <div className="text-xs bg-gray-100 p-2 rounded italic">
+                              <span className="font-semibold">Location:</span> "{issue.location}"
+                            </div>
+                          )}
+                          {issue.example && (
+                            <div className="text-xs bg-red-50 p-2 rounded font-mono border-l-2 border-red-300">
+                              <span className="font-semibold">Found:</span> <span className="text-red-700">{issue.example}</span>
+                            </div>
+                          )}
+                          {issue.correction && (
+                            <div className="text-xs bg-green-50 p-2 rounded font-mono border-l-2 border-green-300">
+                              <span className="font-semibold">Change to:</span> <span className="text-green-700">{issue.correction}</span>
+                            </div>
+                          )}
                           {issue.suggestion && (
-                            <p className="text-xs text-muted-foreground">Suggestion: {issue.suggestion}</p>
+                            <p className="text-xs text-muted-foreground">💡 {issue.suggestion}</p>
                           )}
                         </div>
                       </div>

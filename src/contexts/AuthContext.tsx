@@ -78,24 +78,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (!userData && firebaseUser.email) {
         const email = firebaseUser.email.toLowerCase();
-        const reproQuery = query(
-          collection(db, 'reprography_admins'),
+
+        // Admin fallback: auto-link admin accounts by email
+        const adminQuery = query(
+          collection(db, 'admins'),
           where('email', '==', email)
         );
-        const reproSnap = await getDocs(reproQuery);
+        const adminSnap = await getDocs(adminQuery);
 
-        if (!reproSnap.empty) {
-          const reproDoc = reproSnap.docs[0];
+        if (!adminSnap.empty) {
+          const adminDoc = adminSnap.docs[0];
+          const adminData = adminDoc.data();
           userData = {
             email,
-            role: 'reprography_admin',
-            profileId: reproDoc.id,
+            role: (adminData.role as UserRole) || 'department_admin',
+            profileId: adminDoc.id,
           };
           await setDoc(userDocRef, {
             ...userData,
             createdAt: serverTimestamp(),
             createdBy: 'self',
           }, { merge: true });
+        } else {
+          // Reprography admin fallback
+          const reproQuery = query(
+            collection(db, 'reprography_admins'),
+            where('email', '==', email)
+          );
+          const reproSnap = await getDocs(reproQuery);
+
+          if (!reproSnap.empty) {
+            const reproDoc = reproSnap.docs[0];
+            userData = {
+              email,
+              role: 'reprography_admin',
+              profileId: reproDoc.id,
+            };
+            await setDoc(userDocRef, {
+              ...userData,
+              createdAt: serverTimestamp(),
+              createdBy: 'self',
+            }, { merge: true });
+          }
         }
       }
 

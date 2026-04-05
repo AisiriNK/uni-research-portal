@@ -8,10 +8,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { StudentApprovalStatus } from './StudentApprovalStatus';
 import { TeacherApprovalTable } from './TeacherApprovalTable';
 import { getStudentHallTicket } from '@/services/hallTicketService';
-import { UserCircle, ClipboardCheck } from "lucide-react"
+import { useToast } from '@/hooks/use-toast';
+import { UserCircle, ClipboardCheck, Download } from "lucide-react"
 
 export function ApprovalsPrinting() {
   const { userProfile } = useAuth();
+  const { toast } = useToast();
   const [academicYear, setAcademicYear] = useState(new Date().getFullYear().toString());
   const [semester, setSemester] = useState('1');
   const [hallTicket, setHallTicket] = useState<{
@@ -19,6 +21,7 @@ export function ApprovalsPrinting() {
     semesterNumber: number;
     generatedAt?: Date;
   } | null>(null);
+  const [downloading, setDownloading] = useState(false);
 
   const isStudent = userProfile?.role === 'student';
   const isTeacher = userProfile?.role === 'teacher';
@@ -48,8 +51,49 @@ export function ApprovalsPrinting() {
     };
   }, [userProfile]);
 
-  const handleDownloadHallTicket = (downloadUrl: string) => {
-    window.open(downloadUrl, '_blank');
+  const handleDownloadHallTicket = async () => {
+    if (!hallTicket || !userProfile || !('usn' in userProfile)) return;
+
+    try {
+      setDownloading(true);
+      let downloadUrl = hallTicket.downloadUrl;
+      const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+      
+      // Convert relative URLs to absolute
+      if (!downloadUrl.startsWith('http')) {
+        downloadUrl = `${BACKEND_URL}${downloadUrl}`;
+      }
+      
+      // Fetch and download the file
+      const response = await fetch(downloadUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to download: ${response.statusText}`);
+      }
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `HallTicket_${userProfile.usn}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      
+      toast({
+        title: 'Success',
+        description: 'Hall ticket downloaded successfully',
+      });
+    } catch (error: any) {
+      console.error('Error downloading hall ticket:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to download hall ticket',
+        variant: 'destructive',
+      });
+    } finally {
+      setDownloading(false);
+    }
   };
 
   if (isTeacher) {
@@ -124,8 +168,9 @@ export function ApprovalsPrinting() {
                       <> · Issued {hallTicket.generatedAt.toLocaleDateString('en-IN')}</>
                     )}
                   </div>
-                  <Button onClick={() => handleDownloadHallTicket(hallTicket.downloadUrl)}>
-                    Download Hall Ticket
+                  <Button onClick={handleDownloadHallTicket} disabled={downloading}>
+                    <Download className="h-4 w-4 mr-2" />
+                    {downloading ? 'Downloading...' : 'Download Hall Ticket'}
                   </Button>
                 </div>
               ) : (

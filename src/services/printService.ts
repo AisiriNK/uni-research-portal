@@ -1,18 +1,6 @@
-import { 
-  collection, 
-  addDoc, 
-  updateDoc, 
-  doc, 
-  query, 
-  where, 
-  getDocs,
-  orderBy,
-  Timestamp 
-} from 'firebase/firestore';
-import { db } from '@/config/firebase';
 import { PrintRequest, CreatePrintRequestData, UpdatePrintStatusData } from '@/types/print';
 
-const PRINT_REQUESTS_COLLECTION = 'printRequests';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
 
 /**
  * Create a new print request
@@ -28,28 +16,31 @@ export async function createPrintRequest(
   requestData: CreatePrintRequestData
 ): Promise<string> {
   try {
-    const printRequest = {
-      submissionId: requestData.submissionId,
-      submissionTitle: requestData.submissionTitle,
-      pdfUrl: requestData.pdfUrl,
-      pdfName: requestData.pdfName,
-      
-      studentId: studentData.id,
-      studentName: studentData.name,
-      studentRegNo: studentData.regNo,
-      studentDept: studentData.dept,
-      studentEmail: studentData.email,
-      
-      printOptions: requestData.printOptions,
-      
-      status: 'pending',
-      
-      createdAt: Timestamp.now(),
-      updatedAt: Timestamp.now(),
-    };
+    const formData = new FormData();
+    formData.append('student_id', studentData.id);
+    formData.append('student_name', studentData.name);
+    formData.append('student_reg_no', studentData.regNo);
+    formData.append('student_dept', studentData.dept);
+    formData.append('student_email', studentData.email);
+    formData.append('submission_id', requestData.submissionId);
+    formData.append('submission_title', requestData.submissionTitle);
+    formData.append('pdf_url', requestData.pdfUrl);
+    formData.append('pdf_name', requestData.pdfName);
+    formData.append('copies', String(requestData.printOptions.copies));
+    formData.append('color_mode', requestData.printOptions.colorMode);
+    formData.append('sides', requestData.printOptions.sides);
     
-    const docRef = await addDoc(collection(db, PRINT_REQUESTS_COLLECTION), printRequest);
-    return docRef.id;
+    const response = await fetch(`${BACKEND_URL}/api/print-requests/create`, {
+      method: 'POST',
+      body: formData,
+    });
+    
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+    
+    const result = await response.json();
+    return result.requestId;
   } catch (error) {
     console.error('Error creating print request:', error);
     throw new Error('Failed to create print request');
@@ -61,31 +52,21 @@ export async function createPrintRequest(
  */
 export async function getStudentPrintRequests(studentId: string): Promise<PrintRequest[]> {
   try {
-    const q = query(
-      collection(db, PRINT_REQUESTS_COLLECTION),
-      where('studentId', '==', studentId)
+    const response = await fetch(
+      `${BACKEND_URL}/api/print-requests/student/${studentId}`
     );
     
-    const querySnapshot = await getDocs(q);
-    const requests: PrintRequest[] = [];
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
     
-    querySnapshot.forEach((doc) => {
-      const data = doc.data();
-      requests.push({
-        id: doc.id,
-        ...data,
-        createdAt: data.createdAt?.toDate(),
-        updatedAt: data.updatedAt?.toDate(),
-        completedAt: data.completedAt?.toDate(),
-      } as PrintRequest);
-    });
-    
-    // Sort by creation date (newest first)
-    return requests.sort((a, b) => {
-      const dateA = a.createdAt?.getTime() || 0;
-      const dateB = b.createdAt?.getTime() || 0;
-      return dateB - dateA;
-    });
+    const result = await response.json();
+    return (result.printRequests || []).map((req: any) => ({
+      ...req,
+      createdAt: req.createdAt ? new Date(req.createdAt) : undefined,
+      updatedAt: req.updatedAt ? new Date(req.updatedAt) : undefined,
+      completedAt: req.completedAt ? new Date(req.completedAt) : undefined,
+    }));
   } catch (error) {
     console.error('Error getting student print requests:', error);
     throw new Error('Failed to fetch print requests');
@@ -97,27 +78,27 @@ export async function getStudentPrintRequests(studentId: string): Promise<PrintR
  */
 export async function getPrintRequestBySubmission(submissionId: string): Promise<PrintRequest | null> {
   try {
-    const q = query(
-      collection(db, PRINT_REQUESTS_COLLECTION),
-      where('submissionId', '==', submissionId)
+    const response = await fetch(
+      `${BACKEND_URL}/api/print-requests/submission/${submissionId}`
     );
     
-    const querySnapshot = await getDocs(q);
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
     
-    if (querySnapshot.empty) {
+    const result = await response.json();
+    const printRequest = result.printRequest;
+    
+    if (!printRequest) {
       return null;
     }
     
-    const doc = querySnapshot.docs[0];
-    const data = doc.data();
-    
     return {
-      id: doc.id,
-      ...data,
-      createdAt: data.createdAt?.toDate(),
-      updatedAt: data.updatedAt?.toDate(),
-      completedAt: data.completedAt?.toDate(),
-    } as PrintRequest;
+      ...printRequest,
+      createdAt: printRequest.createdAt ? new Date(printRequest.createdAt) : undefined,
+      updatedAt: printRequest.updatedAt ? new Date(printRequest.updatedAt) : undefined,
+      completedAt: printRequest.completedAt ? new Date(printRequest.completedAt) : undefined,
+    };
   } catch (error) {
     console.error('Error getting print request by submission:', error);
     throw new Error('Failed to fetch print request');
@@ -127,28 +108,26 @@ export async function getPrintRequestBySubmission(submissionId: string): Promise
 /**
  * Get all print requests (for reprography admin)
  */
-export async function getAllPrintRequests(): Promise<PrintRequest[]> {
+export async function getAllPrintRequests(statusFilter?: string): Promise<PrintRequest[]> {
   try {
-    const querySnapshot = await getDocs(collection(db, PRINT_REQUESTS_COLLECTION));
-    const requests: PrintRequest[] = [];
+    const url = new URL(`${BACKEND_URL}/api/print-requests/all`);
+    if (statusFilter) {
+      url.searchParams.append('status', statusFilter);
+    }
     
-    querySnapshot.forEach((doc) => {
-      const data = doc.data();
-      requests.push({
-        id: doc.id,
-        ...data,
-        createdAt: data.createdAt?.toDate(),
-        updatedAt: data.updatedAt?.toDate(),
-        completedAt: data.completedAt?.toDate(),
-      } as PrintRequest);
-    });
+    const response = await fetch(url.toString());
     
-    // Sort by creation date (newest first)
-    return requests.sort((a, b) => {
-      const dateA = a.createdAt?.getTime() || 0;
-      const dateB = b.createdAt?.getTime() || 0;
-      return dateB - dateA;
-    });
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+    
+    const result = await response.json();
+    return (result.printRequests || []).map((req: any) => ({
+      ...req,
+      createdAt: req.createdAt ? new Date(req.createdAt) : undefined,
+      updatedAt: req.updatedAt ? new Date(req.updatedAt) : undefined,
+      completedAt: req.completedAt ? new Date(req.completedAt) : undefined,
+    }));
   } catch (error) {
     console.error('Error getting all print requests:', error);
     throw new Error('Failed to fetch print requests');
@@ -163,23 +142,21 @@ export async function updatePrintRequestStatus(
   updateData: UpdatePrintStatusData
 ): Promise<void> {
   try {
-    const requestRef = doc(db, PRINT_REQUESTS_COLLECTION, requestId);
-    
-    const update: any = {
-      status: updateData.status,
-      processedBy: updateData.processedBy,
-      updatedAt: Timestamp.now(),
-    };
-    
+    const formData = new FormData();
+    formData.append('status', updateData.status);
+    formData.append('processed_by', updateData.processedBy);
     if (updateData.adminNotes) {
-      update.adminNotes = updateData.adminNotes;
+      formData.append('admin_notes', updateData.adminNotes);
     }
     
-    if (updateData.status === 'completed' && updateData.completedAt) {
-      update.completedAt = Timestamp.fromDate(updateData.completedAt);
-    }
+    const response = await fetch(`${BACKEND_URL}/api/print-requests/${requestId}/status`, {
+      method: 'POST',
+      body: formData,
+    });
     
-    await updateDoc(requestRef, update);
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
   } catch (error) {
     console.error('Error updating print request:', error);
     throw new Error('Failed to update print request');

@@ -3,7 +3,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Loader2, FileText, CheckCircle, XCircle, Clock, ExternalLink, MessageSquare, Printer } from 'lucide-react';
+import { Loader2, FileText, CheckCircle, XCircle, Clock, ExternalLink, MessageSquare, Printer, Download } from 'lucide-react';
 import { getStudentSubmissions, resubmitSubmission } from '@/services/noDueService';
 import { getPrintRequestBySubmission, createPrintRequest } from '@/services/printService';
 import { NoDueSubmission } from '@/types/nodue';
@@ -144,6 +144,76 @@ export function StudentSubmissionStatus() {
       });
     } finally {
       setResubmitLoading(false);
+    }
+  };
+
+  const handleViewDocument = async (submission: NoDueSubmission) => {
+    const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+    
+    try {
+      // If URL is from backend, open directly
+      if (submission.pdfUrl.includes('/api/report-submissions/download/')) {
+        window.open(submission.pdfUrl, '_blank');
+        return;
+      }
+      
+      // If URL is a Firebase URL or other external URL, try opening it
+      if (submission.pdfUrl.startsWith('http')) {
+        window.open(submission.pdfUrl, '_blank');
+        return;
+      }
+      
+      // If URL is relative, convert to backend URL
+      const absoluteUrl = `${BACKEND_URL}${submission.pdfUrl}`;
+      window.open(absoluteUrl, '_blank');
+    } catch (err) {
+      console.error('Error opening document:', err);
+      toast({
+        title: 'Error',
+        description: 'Failed to open document',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleDownloadDocument = async (submission: NoDueSubmission) => {
+    const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+    
+    try {
+      let downloadUrl = submission.pdfUrl;
+      
+      // Convert relative URLs to absolute
+      if (!downloadUrl.startsWith('http')) {
+        downloadUrl = `${BACKEND_URL}${downloadUrl}`;
+      }
+      
+      // Fetch and download the file
+      const response = await fetch(downloadUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to download: ${response.statusText}`);
+      }
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = submission.pdfName || 'submission';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      
+      toast({
+        title: 'Success',
+        description: 'Document downloaded successfully',
+      });
+    } catch (err) {
+      console.error('Error downloading document:', err);
+      toast({
+        title: 'Error',
+        description: 'Failed to download document',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -408,10 +478,18 @@ export function StudentSubmissionStatus() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => window.open(submission.pdfUrl, '_blank')}
+                      onClick={() => handleViewDocument(submission)}
                     >
                       <ExternalLink className="mr-2 h-4 w-4" />
                       View Document
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleDownloadDocument(submission)}
+                    >
+                      <Download className="mr-2 h-4 w-4" />
+                      Download
                     </Button>
                     {submission.status === 'rejected' && (
                       <Button

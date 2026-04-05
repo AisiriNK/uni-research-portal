@@ -7,7 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { Loader2, Printer, CheckCircle, Clock, XCircle, FileText, ExternalLink } from 'lucide-react';
+import { Loader2, Printer, CheckCircle, Clock, XCircle, FileText, ExternalLink, Download } from 'lucide-react';
 import { getAllPrintRequests, updatePrintRequestStatus } from '@/services/printService';
 import { PrintRequest, PrintStatus } from '@/types/print';
 import { toast } from '@/hooks/use-toast';
@@ -84,6 +84,72 @@ export function ReprographyDashboard() {
       });
     } finally {
       setProcessing(false);
+    }
+  };
+
+  const handleViewDocument = (request: PrintRequest) => {
+    const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+    
+    try {
+      let url = request.pdfUrl;
+      
+      // If URL is a full URL (http/https), open it directly
+      if (url.startsWith('http')) {
+        window.open(url, '_blank');
+        return;
+      }
+      
+      // If URL is relative, convert to backend URL
+      const absoluteUrl = `${BACKEND_URL}${url}`;
+      window.open(absoluteUrl, '_blank');
+    } catch (err) {
+      console.error('Error opening document:', err);
+      toast({
+        title: 'Error',
+        description: 'Failed to open document',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleDownloadDocument = async (request: PrintRequest) => {
+    const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+    
+    try {
+      let downloadUrl = request.pdfUrl;
+      
+      // Convert relative URLs to absolute
+      if (!downloadUrl.startsWith('http')) {
+        downloadUrl = `${BACKEND_URL}${downloadUrl}`;
+      }
+      
+      // Fetch and download the file
+      const response = await fetch(downloadUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to download: ${response.statusText}`);
+      }
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${request.submissionTitle}.pdf` || `report_${request.studentName}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      
+      toast({
+        title: 'Success',
+        description: 'Document downloaded successfully',
+      });
+    } catch (err) {
+      console.error('Error downloading document:', err);
+      toast({
+        title: 'Error',
+        description: 'Failed to download document',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -186,10 +252,18 @@ export function ReprographyDashboard() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => window.open(request.pdfUrl, '_blank')}
+              onClick={() => handleViewDocument(request)}
             >
               <ExternalLink className="mr-2 h-4 w-4" />
               View PDF
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => handleDownloadDocument(request)}
+            >
+              <Download className="mr-2 h-4 w-4" />
+              Download
             </Button>
 
             {request.status === 'pending' && (

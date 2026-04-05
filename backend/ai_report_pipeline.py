@@ -21,8 +21,10 @@ import threading
 import shutil
 import docx
 import re
+import httpx
+import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 from pypdf import PdfReader, PdfWriter
 from pdf2docx import Converter
@@ -33,6 +35,72 @@ logging.basicConfig(
     stream=sys.stderr
 )
 logger = logging.getLogger("ai_report_pipeline")
+
+async def call_groq_as_fallback(chapter_name: str, chapter_text: str) -> Optional[str]:
+    """
+    Fallback function to call Groq API when Gemini fails or rate limits.
+    Returns the formatted chapter content or None if Groq also fails.
+    """
+    groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not groq_api_key:
+        logger.warning(f"[FALLBACK] GROQ_API_KEY not set, cannot fallback for chapter '{chapter_name}'")
+        return None
+    
+    groq_api_url = "https://api.groq.com/openai/v1/chat/completions"
+    
+    system_prompt = os.getenv(
+        "GEMINI_SYSTEM_PROMPT",
+        "Generate Typst formatted content for a research report chapter."
+    )
+    
+    headers = {
+        "Authorization": f"Bearer {groq_api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": chapter_text
+            }
+        ],
+        "temperature": 0.3,
+        "max_tokens": 3000
+    }
+    
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(groq_api_url, json=payload, headers=headers)
+                
+                if response.status_code == 429:
+                    backoff_time = 2 ** attempt
+                    logger.warning(f"[FALLBACK] Groq rate limit (429) for chapter '{chapter_name}'. Retrying in {backoff_time}s...")
+                    await asyncio.sleep(backoff_time)
+                    continue
+                
+                response.raise_for_status()
+                result = response.json()
+                
+                if result.get("choices"):
+                    content = result["choices"][0].get("message", {}).get("content", "")
+                    logger.info(f"[FALLBACK] Successfully got Groq response for chapter '{chapter_name}'")
+                    return content
+                    
+        except Exception as e:
+            logger.warning(f"[FALLBACK] Groq request failed for chapter '{chapter_name}' (attempt {attempt + 1}/{max_retries}): {str(e)}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** attempt)
+    
+    logger.error(f"[FALLBACK] All Groq attempts failed for chapter '{chapter_name}'")
+    return None
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AI report formatter pipeline")
@@ -136,10 +204,26 @@ def normalize_chapter_heading(value: str) -> str:
 def extract_caption_entries(text: str, chapter_start_page: int) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
     figure_entries: List[Dict[str, str]] = []
     table_entries: List[Dict[str, str]] = []
+    fig_counter = 1
+    
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
             continue
+        
+        # Match Typst figure blocks: #figure(...caption: [Caption Text]...)
+        figure_block_match = re.search(r'#figure\([^)]*caption:\s*\[([^\]]+)\]', line, re.IGNORECASE)
+        if figure_block_match:
+            caption_text = figure_block_match.group(1).strip()
+            if caption_text and caption_text.lower() != "figure":
+                figure_entries.append({
+                    "number": f"{chapter_start_page}.{fig_counter}",
+                    "title": caption_text,
+                    "page": str(chapter_start_page)
+                })
+                fig_counter += 1
+            continue
+        
         # Remove "Figure N:" prefix if present, leaving just the caption
         normalized_line = re.sub(r"^Figure\s+\d+\s*[:.-]?\s*", "", line, flags=re.IGNORECASE)
         
@@ -178,6 +262,7 @@ def build_toc_typst(
         "#page(\n  paper: \"a4\",\n  margin: (top: 1in, bottom: 1in, left: 1.25in, right: 1in)\n)[\n",
         "#set text(font: \"Times New Roman\", size: 12pt)\n",
         "#set par(leading: 1.5em)\n",
+        "#set figure(numbering: none)\n",
         "#align(center)[#text(size: 16pt, weight: \"bold\")[TABLE OF CONTENTS]]\n",
         "#v(0.5em)\n",
         "#table(\n  columns: (0.8cm, 1fr, 2.5cm),\n  align: (left, left, right),\n  stroke: none,\n  inset: 4pt,\n  [Sl. No.], [Chapter], [Page No.],\n"
@@ -517,7 +602,15 @@ All [ and ] pairs in #text[...] are balanced.
                 break
 
         if response_payload is None:
-            raise RuntimeError(f"Gemini request failed for all models: {last_error}")
+            logger.error("[STEP 4] Gemini failed for all models for chapter '%s'. Attempting Groq fallback...", name)
+            
+            # Try Groq fallback
+            groq_response = asyncio.run(call_groq_as_fallback(name, text))
+            if groq_response:
+                logger.info("[STEP 4] Successfully got Groq fallback response for chapter '%s'", name)
+                return name, groq_response
+            
+            raise RuntimeError(f"Gemini request failed for all models and Groq fallback also failed: {last_error}")
 
         candidates = response_payload.get("candidates", [])
         if not candidates:

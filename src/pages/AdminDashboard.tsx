@@ -3,18 +3,22 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { Checkbox } from '@/components/ui/checkbox';
-import { LogOut, User, Mail, Shield, Building2, Users, GraduationCap, BookOpen, Plus, Upload, Sparkles, Send, AlertTriangle, CheckCircle2, Loader2, ClipboardList } from 'lucide-react';
+import { LogOut, User, Mail, Shield, Building2, Users, GraduationCap, BookOpen, Plus, Upload, Sparkles, Send, AlertTriangle, CheckCircle2, Loader2, ClipboardList, Download, FileText } from 'lucide-react';
 import { adminAccountManagementService } from '@/services/adminAccountManagementService';
 import { getAcademicContext, updateAcademicContext } from '@/services/adminService';
 import { generateNoDueRequests } from '@/services/noDueAutomationService';
 import { getStudentsReadyForHallTicket } from '@/services/mentorApprovalService';
 import { downloadHallTicket } from '@/services/hallTicketService';
+import { uploadCourseFeedback } from '@/services/courseFeedbackService';
+import { uploadFeePaidStatus } from '@/services/feePaidStatusService';
+import { addBacklog, getDepartmentBacklogs, markBacklogCleared } from '@/services/backlogService';
 import { calculateSemester, AcademicContext } from '@/types/schema';
 import { collection, doc, getDoc, getDocs, onSnapshot, orderBy, query, setDoc, where, serverTimestamp, deleteDoc } from 'firebase/firestore';
 import { db } from '@/config/firebase';
@@ -153,6 +157,62 @@ const AdminDashboard: React.FC = () => {
     mentorApprovedAt: Date;
   }>>([]);
   const [hallTicketDepartment, setHallTicketDepartment] = useState(isSuperAdmin ? '' : user?.departmentId || '');
+  const [generatedHallTickets, setGeneratedHallTickets] = useState<Array<{
+    id: string;
+    usn: string;
+    studentName: string;
+    semesterNumber: number;
+    section: string;
+    generatedAt: Date;
+    generatedBy: string;
+    pdfUrl: string;
+  }>>([]);
+  const [generatedTicketsDialogOpen, setGeneratedTicketsDialogOpen] = useState(false);
+  const [generatedTicketsLoading, setGeneratedTicketsLoading] = useState(false);
+  const [courseFeedbackDialogOpen, setCourseFeedbackDialogOpen] = useState(false);
+  const [courseFeedbackLoading, setCourseFeedbackLoading] = useState(false);
+  const [courseFeedbackFile, setCourseFeedbackFile] = useState<File | null>(null);
+  const [courseFeedbackDepartment, setCourseFeedbackDepartment] = useState(isSuperAdmin ? '' : user?.departmentId || '');
+  const [courseFeedbackSemester, setCourseFeedbackSemester] = useState('1');
+  const [lastFeedbackUpload, setLastFeedbackUpload] = useState<{
+    uploadedAt: Date;
+    uploadedBy: string;
+    department: string;
+    semester: number;
+    recordsCount: number;
+  } | null>(null);
+  const [feedbackUploadLoading, setFeedbackUploadLoading] = useState(false);
+
+  // Fee Paid Status state
+  const [feePaidDialogOpen, setFeePaidDialogOpen] = useState(false);
+  const [feePaidLoading, setFeePaidLoading] = useState(false);
+  const [feePaidFile, setFeePaidFile] = useState<File | null>(null);
+  const [feePaidDepartment, setFeePaidDepartment] = useState(isSuperAdmin ? '' : user?.departmentId || '');
+  const [lastFeePaidUpload, setLastFeePaidUpload] = useState<{
+    uploadedAt: Date;
+    uploadedBy: string;
+    department: string;
+    recordsCount: number;
+  } | null>(null);
+  
+  // Backlog management state
+  const [backlogDialogOpen, setBacklogDialogOpen] = useState(false);
+  const [backlogAddFormOpen, setBacklogAddFormOpen] = useState(false);
+  const [backlogLoading, setBacklogLoading] = useState(false);
+  const [backlogSubjectCode, setBacklogSubjectCode] = useState('');
+  const [backlogSubjectName, setBacklogSubjectName] = useState('');
+  const [backlogStudentUSN, setBacklogStudentUSN] = useState('');
+  const [backlogSemester, setBacklogSemester] = useState('1');
+  const [backlogDepartment, setBacklogDepartment] = useState(isSuperAdmin ? '' : user?.departmentId || '');
+  const [backlogList, setBacklogList] = useState<Array<{
+    id: string;
+    usn: string;
+    subjectCode: string;
+    subjectName: string;
+    status: 'pending' | 'cleared';
+    createdAt: string;
+  }>>([]);
+  
   const [examDateDialogOpen, setExamDateDialogOpen] = useState(false);
   const [examDateSemester, setExamDateSemester] = useState('1');
   const [examDateLoading, setExamDateLoading] = useState(false);
@@ -1234,6 +1294,278 @@ const AdminDashboard: React.FC = () => {
     }
   };
 
+  const loadGeneratedHallTickets = async () => {
+    const departmentId = isSuperAdmin ? hallTicketDepartment : user?.departmentId;
+    if (!departmentId) {
+      toast({
+        title: 'Select a department',
+        description: 'Choose a department to load generated hall tickets.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    try {
+      setGeneratedTicketsLoading(true);
+      // Query all generated hall tickets for the department
+      const { collection, query, where, getDocs, orderBy } = await import('firebase/firestore');
+      
+      // Get all students in the department
+      const studentsQuery = query(
+        collection(db, 'students'),
+        where('departmentId', '==', departmentId)
+      );
+      const studentsSnap = await getDocs(studentsQuery);
+      const studentMap = new Map(studentsSnap.docs.map(doc => [doc.id, (doc.data() as any).name]));
+
+      // Get all generated hall tickets
+      const hallTicketsQuery = query(
+        collection(db, 'hall_tickets'),
+        orderBy('generatedAt', 'desc')
+      );
+      const hallTicketsSnap = await getDocs(hallTicketsQuery);
+      
+      const tickets = hallTicketsSnap.docs
+        .map(doc => {
+          const data = doc.data() as any;
+          return {
+            id: doc.id,
+            usn: data.usn,
+            studentName: studentMap.get(data.usn) || 'Unknown',
+            semesterNumber: data.semesterNumber,
+            section: data.section || '-',
+            generatedAt: data.generatedAt?.toDate ? data.generatedAt.toDate() : new Date(data.generatedAt),
+            generatedBy: data.generatedBy,
+            pdfUrl: data.pdfUrl,
+          };
+        })
+        .filter(ticket => studentMap.has(ticket.usn)); // Filter to only show tickets for students in this department
+      
+      setGeneratedHallTickets(tickets);
+    } catch (error) {
+      console.error('Error loading generated hall tickets:', error);
+      toast({ title: 'Failed to load hall tickets', description: 'Please try again.', variant: 'destructive' });
+    } finally {
+      setGeneratedTicketsLoading(false);
+    }
+  };
+
+  const handleCourseFeedbackUpload = async () => {
+    if (!courseFeedbackFile || !courseFeedbackDepartment) {
+      toast({
+        title: 'Missing information',
+        description: 'Please select file, department, and semester.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      setCourseFeedbackLoading(true);
+      const adminId = (user as any)?.adminId || user?.uid || user?.email || 'admin';
+      const academicYear = academicContext?.academicYear || new Date().getFullYear().toString();
+
+      const result = await uploadCourseFeedback(
+        courseFeedbackFile,
+        courseFeedbackDepartment,
+        parseInt(courseFeedbackSemester, 10),
+        academicYear,
+        adminId
+      );
+
+      // Update last feedback upload info
+      setLastFeedbackUpload({
+        uploadedAt: new Date(),
+        uploadedBy: adminId,
+        department: courseFeedbackDepartment,
+        semester: parseInt(courseFeedbackSemester, 10),
+        recordsCount: result.uploaded,
+      });
+
+      console.log('[FEEDBACK_UPLOAD] Dashboard updated with last upload info:', {
+        uploadedAt: new Date().toISOString(),
+        department: courseFeedbackDepartment,
+        semester: parseInt(courseFeedbackSemester, 10),
+        recordsCount: result.uploaded,
+      });
+
+      toast({
+        title: 'Success!',
+        description: `Uploaded ${result.uploaded} feedback records. ${result.failed > 0 ? `Failed: ${result.failed}` : ''}`,
+      });
+
+      setCourseFeedbackFile(null);
+      setCourseFeedbackDialogOpen(false);
+    } catch (error: any) {
+      console.error('Course feedback upload error:', error);
+      toast({
+        title: 'Upload failed',
+        description: error?.message || 'Failed to upload course feedback',
+        variant: 'destructive',
+      });
+    } finally {
+      setCourseFeedbackLoading(false);
+    }
+  };
+
+  const handleFeePaidStatusUpload = async () => {
+    if (!feePaidFile || !feePaidDepartment) {
+      toast({
+        title: 'Missing information',
+        description: 'Please select file and department.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      setFeePaidLoading(true);
+      const adminId = (user as any)?.adminId || user?.uid || user?.email || 'admin';
+
+      const result = await uploadFeePaidStatus(
+        feePaidFile,
+        feePaidDepartment,
+        adminId
+      );
+
+      // Update last fee paid upload info
+      setLastFeePaidUpload({
+        uploadedAt: new Date(),
+        uploadedBy: adminId,
+        department: feePaidDepartment,
+        recordsCount: result.uploaded,
+      });
+
+      toast({
+        title: 'Success!',
+        description: `Uploaded ${result.uploaded} fee paid records. ${result.failed > 0 ? `Failed: ${result.failed}` : ''}`,
+      });
+
+      setFeePaidFile(null);
+      setFeePaidDialogOpen(false);
+    } catch (error: any) {
+      console.error('Fee paid status upload error:', error);
+      toast({
+        title: 'Upload failed',
+        description: error?.message || 'Failed to upload fee paid status',
+        variant: 'destructive',
+      });
+    } finally {
+      setFeePaidLoading(false);
+    }
+  };
+
+  // Load backlogs for the selected department and semester
+  const loadBacklogs = async () => {
+    try {
+      setBacklogLoading(true);
+      if (!backlogDepartment) {
+        toast({
+          title: 'Please select a department',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      const backlogs = await getDepartmentBacklogs(backlogDepartment, parseInt(backlogSemester));
+      
+      const formattedBacklogs = backlogs.map((backlog: any) => ({
+        id: backlog.id,
+        usn: backlog.usn,
+        subjectCode: backlog.subjectCode,
+        subjectName: backlog.subjectName,
+        status: backlog.status,
+        createdAt: backlog.createdAt?.toDate?.()?.toLocaleDateString?.() || 'N/A',
+      }));
+
+      setBacklogList(formattedBacklogs);
+    } catch (error: any) {
+      console.error('Error loading backlogs:', error);
+      toast({
+        title: 'Error loading backlogs',
+        description: error?.message || 'Failed to load backlog data',
+        variant: 'destructive',
+      });
+    } finally {
+      setBacklogLoading(false);
+    }
+  };
+
+  // Add new backlog
+  const handleAddBacklog = async () => {
+    try {
+      if (!backlogStudentUSN || !backlogSubjectCode || !backlogSubjectName || !backlogDepartment) {
+        toast({
+          title: 'Missing fields',
+          description: 'Please fill in all required fields',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      setBacklogLoading(true);
+      const adminId = (user as any)?.adminId || user?.uid || user?.email || 'admin';
+
+      await addBacklog(
+        backlogStudentUSN,
+        backlogSubjectCode,
+        backlogSubjectName,
+        backlogDepartment,
+        parseInt(backlogSemester),
+        adminId
+      );
+
+      toast({
+        title: 'Success',
+        description: `Backlog added for ${backlogStudentUSN}`,
+      });
+
+      // Reset form
+      setBacklogStudentUSN('');
+      setBacklogSubjectCode('');
+      setBacklogSubjectName('');
+      setBacklogAddFormOpen(false);
+
+      // Reload backlogs
+      await loadBacklogs();
+    } catch (error: any) {
+      console.error('Error adding backlog:', error);
+      toast({
+        title: 'Error adding backlog',
+        description: error?.message || 'Failed to add backlog',
+        variant: 'destructive',
+      });
+    } finally {
+      setBacklogLoading(false);
+    }
+  };
+
+  // Mark backlog as cleared
+  const handleMarkBacklogCleared = async (backlogId: string) => {
+    try {
+      setBacklogLoading(true);
+      const adminId = (user as any)?.adminId || user?.uid || user?.email || 'admin';
+
+      await markBacklogCleared(backlogId, adminId);
+
+      toast({
+        title: 'Success',
+        description: 'Backlog marked as cleared',
+      });
+
+      // Reload backlogs
+      await loadBacklogs();
+    } catch (error: any) {
+      console.error('Error marking backlog as cleared:', error);
+      toast({
+        title: 'Error clearing backlog',
+        description: error?.message || 'Failed to mark backlog as cleared',
+        variant: 'destructive',
+      });
+    } finally {
+      setBacklogLoading(false);
+    }
+  };
+
   const handleGenerateHallTicket = async (usn: string) => {
     try {
       const adminId = (user as any)?.adminId || user?.uid || user?.email || 'admin';
@@ -1367,6 +1699,8 @@ const AdminDashboard: React.FC = () => {
 
     try {
       setExamDateLoading(true);
+      console.log(`[EXAM_DATES] Loading for dept=${departmentId}, sem=${semesterNumber}`);
+      
       const curriculumQuery = query(
         collection(db, 'curriculum'),
         where('departmentId', '==', departmentId),
@@ -1374,6 +1708,7 @@ const AdminDashboard: React.FC = () => {
       );
       const curriculumSnap = await getDocs(curriculumQuery);
       const subjects = curriculumSnap.docs.map((docSnap) => docSnap.data() as any);
+      console.log(`[EXAM_DATES] Found ${subjects.length} subjects in curriculum`);
 
       const scheduleQuery = query(
         collection(db, 'exam_schedule'),
@@ -1382,25 +1717,46 @@ const AdminDashboard: React.FC = () => {
       );
       const scheduleSnap = await getDocs(scheduleQuery);
       const scheduleMap = new Map<string, string>();
+      
+      console.log(`[EXAM_DATES] Found ${scheduleSnap.docs.length} existing exam dates`);
+      
       scheduleSnap.docs.forEach((docSnap) => {
         const data = docSnap.data() as any;
-        if (data.subjectCode) {
-          scheduleMap.set(String(data.subjectCode).toUpperCase(), normalizeExamDate(data.examDate || ''));
-        }
+        const code = String(data.subjectCode).toUpperCase();
+        const date = normalizeExamDate(data.examDate || '');
+        scheduleMap.set(code, date);
+        console.log(`[EXAM_DATES] Loaded ${code}: ${date}`);
       });
 
       const rows = subjects
-        .map((subject) => ({
-          subjectCode: subject.subjectCode,
-          subjectName: subject.subjectName || subject.subjectCode,
-          examDate: scheduleMap.get(String(subject.subjectCode).toUpperCase()) || '',
-        }))
+        .map((subject) => {
+          const code = String(subject.subjectCode).toUpperCase();
+          return {
+            subjectCode: subject.subjectCode,
+            subjectName: subject.subjectName || subject.subjectCode,
+            examDate: scheduleMap.get(code) || '',
+          };
+        })
         .sort((a, b) => a.subjectCode.localeCompare(b.subjectCode));
 
+      console.log(`[EXAM_DATES] Loaded ${rows.length} exam date rows`);
       setExamDateRows(rows);
+      
+      if (rows.length === 0) {
+        toast({
+          title: 'No subjects found',
+          description: 'This department/semester combination has no subjects.',
+          variant: 'destructive',
+        });
+      }
     } catch (error) {
-      console.error('Error loading exam dates:', error);
-      toast({ title: 'Failed to load exam dates', description: 'Please try again.', variant: 'destructive' });
+      console.error('[EXAM_DATES] Error loading exam dates:', error);
+      toast({ 
+        title: 'Failed to load exam dates', 
+        description: error instanceof Error ? error.message : 'Please try again.',
+        variant: 'destructive' 
+      });
+
     } finally {
       setExamDateLoading(false);
     }
@@ -1426,30 +1782,61 @@ const AdminDashboard: React.FC = () => {
       return;
     }
 
+    if (examDateRows.length === 0) {
+      toast({
+        title: 'No subjects loaded',
+        description: 'Please load exam dates first.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     try {
       setExamDateLoading(true);
-      await Promise.all(
-        examDateRows.map((row) => {
-          const docId = `${departmentId}_${semesterNumber}_${row.subjectCode}`;
-          return setDoc(
-            doc(db, 'exam_schedule', docId),
-            {
-              departmentId,
-              semesterNumber,
-              subjectCode: row.subjectCode,
-              examDate: normalizeExamDate(row.examDate || ''),
-              updatedAt: serverTimestamp(),
-              updatedBy: (user as any)?.adminId || user?.uid || user?.email || 'admin',
-            },
-            { merge: true }
-          );
-        })
-      );
-      toast({ title: 'Exam dates saved', description: 'Schedule updated successfully.' });
+      let savedCount = 0;
+      
+      const savePromises = examDateRows.map((row) => {
+        const docId = `${departmentId}_${semesterNumber}_${row.subjectCode}`;
+        const examDate = normalizeExamDate(row.examDate || '');
+        
+        console.log(`[EXAM_DATES] Saving: ${docId} with date: ${examDate}`);
+        
+        return setDoc(
+          doc(db, 'exam_schedule', docId),
+          {
+            departmentId,
+            semesterNumber,
+            subjectCode: row.subjectCode,
+            subjectName: row.subjectName,
+            examDate: examDate,
+            updatedAt: serverTimestamp(),
+            updatedBy: (user as any)?.adminId || user?.uid || user?.email || 'admin',
+          },
+          { merge: true }
+        ).then(() => {
+          savedCount++;
+          console.log(`[EXAM_DATES] ✓ Saved ${docId}`);
+        }).catch((err) => {
+          console.error(`[EXAM_DATES] ✗ Failed to save ${docId}:`, err);
+          throw err;
+        });
+      });
+      
+      await Promise.all(savePromises);
+      
+      console.log(`[EXAM_DATES] Successfully saved ${savedCount}/${examDateRows.length} exam dates`);
+      toast({ 
+        title: 'Exam dates saved', 
+        description: `Saved ${savedCount} exam date${savedCount === 1 ? '' : 's'} successfully.` 
+      });
       setExamDateDialogOpen(false);
     } catch (error) {
-      console.error('Error saving exam dates:', error);
-      toast({ title: 'Save failed', description: 'Could not save exam dates.', variant: 'destructive' });
+      console.error('[EXAM_DATES] Error saving exam dates:', error);
+      toast({ 
+        title: 'Save failed', 
+        description: error instanceof Error ? error.message : 'Could not save exam dates.', 
+        variant: 'destructive' 
+      });
     } finally {
       setExamDateLoading(false);
     }
@@ -1860,21 +2247,115 @@ const AdminDashboard: React.FC = () => {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <Shield className="h-10 w-10 text-orange-600" />
-                <span className="text-3xl font-bold text-orange-600">
-                  {hallTicketCandidates.length}
-                </span>
+                <div className="text-right">
+                  <div className="text-3xl font-bold text-orange-600">{hallTicketCandidates.length}</div>
+                  <div className="text-xs text-muted-foreground">Ready to Generate</div>
+                </div>
               </div>
               <CardTitle className="mt-4">Hall Tickets</CardTitle>
               <CardDescription>
-                Generate hall tickets after clearances
+                Generate and manage hall tickets for students
               </CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-2">
               <Button className="w-full" variant="outline" onClick={() => {
                 setHallTicketDialogOpen(true);
                 loadHallTicketCandidates();
               }}>
                 Generate Tickets
+              </Button>
+              <Button className="w-full" variant="outline" onClick={() => {
+                setGeneratedTicketsDialogOpen(true);
+                loadGeneratedHallTickets();
+              }}>
+                View Generated ({generatedHallTickets.length})
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* Course Feedback Upload */}
+          <Card className="hover:shadow-lg transition-shadow cursor-pointer border-l-4 border-l-indigo-500">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CheckCircle2 className="h-10 w-10 text-indigo-600" />
+              </div>
+              <CardTitle className="mt-4">Course Feedback Tracking</CardTitle>
+              <CardDescription>
+                Upload feedback completion data for students
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Button className="w-full" variant="outline" onClick={() => {
+                setCourseFeedbackDialogOpen(true);
+              }}>
+                Upload Feedback Data
+              </Button>
+              
+              {lastFeedbackUpload && (
+                <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                  <div className="text-sm font-semibold text-green-900 mb-2">✅ Last Upload</div>
+                  <div className="text-xs space-y-1 text-green-800">
+                    <div><span className="font-medium">Department:</span> {lastFeedbackUpload.department}</div>
+                    <div><span className="font-medium">Semester:</span> {lastFeedbackUpload.semester}</div>
+                    <div><span className="font-medium">Records:</span> {lastFeedbackUpload.recordsCount}</div>
+                    <div><span className="font-medium">Time:</span> {lastFeedbackUpload.uploadedAt.toLocaleString('en-IN')}</div>
+                    <div><span className="font-medium">By:</span> {lastFeedbackUpload.uploadedBy}</div>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Fee Paid Status Upload */}
+          <Card className="hover:shadow-lg transition-shadow cursor-pointer border-l-4 border-l-green-500">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CheckCircle2 className="h-10 w-10 text-green-600" />
+              </div>
+              <CardTitle className="mt-4">Fee Paid Status</CardTitle>
+              <CardDescription>
+                Upload fee payment status for students
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Button className="w-full" variant="outline" onClick={() => {
+                setFeePaidDialogOpen(true);
+              }}>
+                Upload Fee Status
+              </Button>
+              
+              {lastFeePaidUpload && (
+                <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                  <div className="text-sm font-semibold text-green-900 mb-2">✅ Last Upload</div>
+                  <div className="text-xs space-y-1 text-green-800">
+                    <div><span className="font-medium">Department:</span> {lastFeePaidUpload.department}</div>
+                    <div><span className="font-medium">Records:</span> {lastFeePaidUpload.recordsCount}</div>
+                    <div><span className="font-medium">Time:</span> {lastFeePaidUpload.uploadedAt.toLocaleString('en-IN')}</div>
+                    <div><span className="font-medium">By:</span> {lastFeePaidUpload.uploadedBy}</div>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Backlog Management */}
+          <Card className="hover:shadow-lg transition-shadow cursor-pointer border-l-4 border-l-amber-500">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <AlertTriangle className="h-10 w-10 text-amber-600" />
+              </div>
+              <CardTitle className="mt-4">Backlog Management</CardTitle>
+              <CardDescription>
+                Add and track student backlogs for hall tickets
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button className="w-full" variant="outline" onClick={() => {
+                setBacklogDialogOpen(true);
+                // Load backlogs when opening dialog
+                setTimeout(() => loadBacklogs(), 100);
+              }}>
+                Manage Backlogs
               </Button>
             </CardContent>
           </Card>
@@ -1887,30 +2368,13 @@ const AdminDashboard: React.FC = () => {
               </div>
               <CardTitle className="mt-4">Department Settings</CardTitle>
               <CardDescription>
+
                 Configure department-specific settings
               </CardDescription>
             </CardHeader>
             <CardContent>
               <Button className="w-full" variant="outline">
                 View Settings
-              </Button>
-            </CardContent>
-          </Card>
-
-          {/* Reports */}
-          <Card className="hover:shadow-lg transition-shadow cursor-pointer border-l-4 border-l-yellow-500">
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <BookOpen className="h-10 w-10 text-yellow-600" />
-              </div>
-              <CardTitle className="mt-4">Reports</CardTitle>
-              <CardDescription>
-                View analytics and generate reports
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button className="w-full" variant="outline">
-                View Reports
               </Button>
             </CardContent>
           </Card>
@@ -2263,6 +2727,304 @@ const AdminDashboard: React.FC = () => {
                 </tbody>
               </table>
             </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Generated Hall Tickets Dialog */}
+        <Dialog open={generatedTicketsDialogOpen} onOpenChange={setGeneratedTicketsDialogOpen}>
+          <DialogContent className="max-w-5xl">
+            <DialogHeader>
+              <DialogTitle>Generated Hall Tickets</DialogTitle>
+              <CardDescription>View and manage all generated hall tickets</CardDescription>
+            </DialogHeader>
+            <div className="flex flex-wrap gap-3 pb-4">
+              {isSuperAdmin ? (
+                <Select value={hallTicketDepartment} onValueChange={setHallTicketDepartment}>
+                  <SelectTrigger className="w-full md:w-[200px]">
+                    <SelectValue placeholder="Select department" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {departments.filter((dept) => dept !== 'ALL').map((dept) => (
+                      <SelectItem key={dept} value={dept}>
+                        {dept}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input value={user?.departmentId || 'N/A'} disabled className="w-full md:w-[200px] bg-gray-100" />
+              )}
+              <div className="flex-1" />
+              <Button size="sm" variant="outline" onClick={loadGeneratedHallTickets} disabled={generatedTicketsLoading}>
+                {generatedTicketsLoading ? 'Refreshing...' : 'Refresh'}
+              </Button>
+            </div>
+            <div className="overflow-x-auto max-h-[60vh] border rounded-lg">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-50 text-left text-xs font-semibold uppercase tracking-wider text-gray-600">
+                  <tr>
+                    <th className="px-4 py-3">USN</th>
+                    <th className="px-4 py-3">Student Name</th>
+                    <th className="px-4 py-3">Semester</th>
+                    <th className="px-4 py-3">Section</th>
+                    <th className="px-4 py-3">Generated Date</th>
+                    <th className="px-4 py-3">Generated By</th>
+                    <th className="px-4 py-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {generatedTicketsLoading ? (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-6 text-center text-muted-foreground">
+                        Loading generated hall tickets...
+                      </td>
+                    </tr>
+                  ) : generatedHallTickets.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-6 text-center text-muted-foreground">
+                        No generated hall tickets found.
+                      </td>
+                    </tr>
+                  ) : (
+                    generatedHallTickets.map((ticket) => (
+                      <tr key={ticket.id} className="border-t hover:bg-gray-50">
+                        <td className="px-4 py-3 font-mono text-xs uppercase">{ticket.usn}</td>
+                        <td className="px-4 py-3 font-medium">{ticket.studentName}</td>
+                        <td className="px-4 py-3">{ticket.semesterNumber}</td>
+                        <td className="px-4 py-3">{ticket.section}</td>
+                        <td className="px-4 py-3 text-xs">
+                          {ticket.generatedAt.toLocaleDateString('en-IN')} {ticket.generatedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">{ticket.generatedBy}</td>
+                        <td className="px-4 py-3">
+                          <Button 
+                            size="sm" 
+                            variant="outline"
+                            onClick={() => window.open(ticket.pdfUrl, '_blank')}
+                          >
+                            <Download className="mr-1 h-4 w-4" />
+                            Download
+                          </Button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Course Feedback Upload Dialog */}
+        <Dialog open={courseFeedbackDialogOpen} onOpenChange={setCourseFeedbackDialogOpen}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Upload Course Feedback Data</DialogTitle>
+              <CardDescription>
+                Upload Excel file with student feedback completion status
+              </CardDescription>
+            </DialogHeader>
+
+            <div className="space-y-4">
+              {/* Instructions */}
+              <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <p className="text-sm font-medium text-blue-900 mb-2">Excel File Format:</p>
+                <ul className="text-sm text-blue-800 space-y-1 ml-4">
+                  <li>• Column 1: USN (Student University Serial Number)</li>
+                  <li>• Column 2: Course Feedback Completed (Yes/No)</li>
+                  <li>• "Yes" only if feedback completed for ALL subjects</li>
+                </ul>
+              </div>
+
+              {/* File Input */}
+              <div className="space-y-2">
+                <Label htmlFor="feedback-file">Select Excel File *</Label>
+                <Input
+                  id="feedback-file"
+                  type="file"
+                  accept=".xlsx,.xls"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      setCourseFeedbackFile(file);
+                    }
+                  }}
+                  disabled={courseFeedbackLoading}
+                />
+                {courseFeedbackFile && (
+                  <p className="text-sm text-green-600">✓ {courseFeedbackFile.name}</p>
+                )}
+              </div>
+
+              {/* Department */}
+              <div className="space-y-2">
+                <Label>Department *</Label>
+                {isSuperAdmin ? (
+                  <Select value={courseFeedbackDepartment} onValueChange={setCourseFeedbackDepartment}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select department" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {departments.filter((dept) => dept !== 'ALL').map((dept) => (
+                        <SelectItem key={dept} value={dept}>
+                          {dept}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input value={user?.departmentId || 'N/A'} disabled className="bg-gray-100" />
+                )}
+              </div>
+
+              {/* Semester */}
+              <div className="space-y-2">
+                <Label>Semester *</Label>
+                <Select value={courseFeedbackSemester} onValueChange={setCourseFeedbackSemester}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SEMESTER_OPTIONS.map((sem) => (
+                      <SelectItem key={sem} value={String(sem)}>
+                        Semester {sem}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setCourseFeedbackDialogOpen(false)}
+                disabled={courseFeedbackLoading}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleCourseFeedbackUpload}
+                disabled={courseFeedbackLoading || !courseFeedbackFile || !courseFeedbackDepartment}
+              >
+                {courseFeedbackLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Uploading...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="mr-2 h-4 w-4" />
+                    Upload Feedback Data
+                  </>
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Fee Paid Status Upload Dialog */}
+        <Dialog open={feePaidDialogOpen} onOpenChange={setFeePaidDialogOpen}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Upload Fee Paid Status</DialogTitle>
+              <CardDescription>
+                Upload Excel file with student fee payment status
+              </CardDescription>
+            </DialogHeader>
+
+            <div className="space-y-4">
+              {/* Instructions */}
+              <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <p className="text-sm font-medium text-blue-900 mb-2">Excel File Format:</p>
+                <ul className="text-sm text-blue-800 space-y-1 ml-4">
+                  <li>• Column 1: USN (Student University Serial Number)</li>
+                  <li>• Column 2: Fee Paid (Yes/No)</li>
+                  <li>• Use "Yes" if fee is paid, "No" if not paid</li>
+                </ul>
+              </div>
+
+              {/* File Input */}
+              <div className="space-y-2">
+                <Label htmlFor="fee-paid-file">Select Excel File *</Label>
+                <Input
+                  id="fee-paid-file"
+                  type="file"
+                  accept=".xlsx,.xls"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      setFeePaidFile(file);
+                    }
+                  }}
+                  disabled={feePaidLoading}
+                />
+                {feePaidFile && (
+                  <p className="text-sm text-green-600">✓ {feePaidFile.name}</p>
+                )}
+              </div>
+
+              {/* Department */}
+              <div className="space-y-2">
+                <Label>Department *</Label>
+                {isSuperAdmin ? (
+                  <Select value={feePaidDepartment} onValueChange={setFeePaidDepartment}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select department" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {departments.filter((dept) => dept !== 'ALL').map((dept) => (
+                        <SelectItem key={dept} value={dept}>
+                          {dept}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input value={user?.departmentId || 'N/A'} disabled className="bg-gray-100" />
+                )}
+              </div>
+
+              {/* Last Upload Info */}
+              {lastFeePaidUpload && (
+                <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                  <p className="text-sm text-green-900">
+                    <strong>Last Upload:</strong> {lastFeePaidUpload.recordsCount} records
+                    by {lastFeePaidUpload.uploadedBy}
+                  </p>
+                  <p className="text-xs text-green-700">
+                    {lastFeePaidUpload.uploadedAt.toLocaleDateString('en-IN')}{' '}
+                    {lastFeePaidUpload.uploadedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setFeePaidDialogOpen(false)}
+                disabled={feePaidLoading}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleFeePaidStatusUpload}
+                disabled={feePaidLoading || !feePaidFile || !feePaidDepartment}
+              >
+                {feePaidLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Uploading...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="mr-2 h-4 w-4" />
+                    Upload Fee Status
+                  </>
+                )}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
 
@@ -4200,6 +4962,175 @@ const AdminDashboard: React.FC = () => {
                 </div>
               )}
             </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Backlog Management Dialog */}
+        <Dialog open={backlogDialogOpen} onOpenChange={setBacklogDialogOpen}>
+          <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Backlog Management</DialogTitle>
+              <CardDescription>Add and track student backlogs that will appear in hall tickets</CardDescription>
+            </DialogHeader>
+
+            <div className="space-y-4">
+              {/* Filters */}
+              <div className="grid grid-cols-3 gap-4 p-4 bg-gray-50 rounded-lg">
+                <div>
+                  <Label htmlFor="backlog-dept">Department</Label>
+                  <Select value={backlogDepartment} onValueChange={setBacklogDepartment}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {departments.map((dept) => (
+                        <SelectItem key={dept} value={dept}>
+                          {dept}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label htmlFor="backlog-sem">Semester</Label>
+                  <Select value={backlogSemester} onValueChange={setBacklogSemester}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Array.from({ length: 8 }, (_, i) => (
+                        <SelectItem key={i + 1} value={String(i + 1)}>
+                          Semester {i + 1}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-end gap-2">
+                  <Button 
+                    className="flex-1" 
+                    variant="outline" 
+                    onClick={loadBacklogs}
+                    disabled={backlogLoading || !backlogDepartment}
+                  >
+                    {backlogLoading ? 'Loading...' : 'Load Backlogs'}
+                  </Button>
+                  <Button 
+                    className="flex-1" 
+                    onClick={() => setBacklogAddFormOpen(true)}
+                  >
+                    + Add Backlog
+                  </Button>
+                </div>
+              </div>
+
+              {/* Add Backlog Form */}
+              {backlogAddFormOpen && (
+                <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg space-y-3">
+                  <h3 className="font-semibold text-blue-900">Add New Backlog</h3>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label>Subject Code</Label>
+                      <Input 
+                        placeholder="e.g., CS101"
+                        value={backlogSubjectCode}
+                        onChange={(e) => setBacklogSubjectCode(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <Label>Subject Name</Label>
+                      <Input 
+                        placeholder="e.g., Data Structures"
+                        value={backlogSubjectName}
+                        onChange={(e) => setBacklogSubjectName(e.target.value)}
+                      />
+                    </div>
+                    <div className="col-span-2">
+                      <Label>Student USN</Label>
+                      <Input 
+                        placeholder="e.g., 4VV22CS001"
+                        value={backlogStudentUSN}
+                        onChange={(e) => setBacklogStudentUSN(e.target.value.toUpperCase())}
+                      />
+                    </div>
+                  </div>
+                  <div className="flex gap-2 justify-end">
+                    <Button 
+                      variant="outline" 
+                      onClick={() => {
+                        setBacklogAddFormOpen(false);
+                        setBacklogSubjectCode('');
+                        setBacklogSubjectName('');
+                        setBacklogStudentUSN('');
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                    <Button 
+                      onClick={handleAddBacklog}
+                      disabled={backlogLoading || !backlogSubjectCode || !backlogSubjectName || !backlogStudentUSN}
+                    >
+                      {backlogLoading ? 'Adding...' : 'Add Backlog'}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* Backlogs Table */}
+              {backlogList.length > 0 ? (
+                <div className="border rounded-lg overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b bg-gray-50">
+                        <th className="text-left p-3">USN</th>
+                        <th className="text-left p-3">Subject Code</th>
+                        <th className="text-left p-3">Subject Name</th>
+                        <th className="text-center p-3">Status</th>
+                        <th className="text-center p-3">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {backlogList.map((backlog) => (
+                        <tr key={backlog.id} className="border-b hover:bg-gray-50">
+                          <td className="p-3 font-semibold">{backlog.usn}</td>
+                          <td className="p-3">{backlog.subjectCode}</td>
+                          <td className="p-3">{backlog.subjectName}</td>
+                          <td className="p-3 text-center">
+                            <Badge variant={backlog.status === 'pending' ? 'destructive' : 'outline'}>
+                              {backlog.status === 'pending' ? 'Pending' : 'Cleared'}
+                            </Badge>
+                          </td>
+                          <td className="p-3 text-center">
+                            {backlog.status === 'pending' && (
+                              <Button 
+                                size="sm" 
+                                onClick={() => handleMarkBacklogCleared(backlog.id)}
+                                disabled={backlogLoading}
+                              >
+                                Mark Cleared
+                              </Button>
+                            )}
+                            {backlog.status === 'cleared' && (
+                              <span className="text-green-600 font-semibold">✓ Cleared</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-center py-8 text-gray-500">
+                  {backlogLoading ? 'Loading backlogs...' : 'No backlogs found for this department and semester'}
+                </div>
+              )}
+            </div>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setBacklogDialogOpen(false)}>
+                Close
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </main>

@@ -26,7 +26,7 @@ def convert_table_to_string(table):
 def wrap_table_with_caption(table_str, caption=None):
     """Wrap table with optional centered caption"""
     if caption:
-        return f"#align(center)[{caption}]\n{table_str}"
+        return f"{caption}\n{table_str}"
     return table_str
 
 
@@ -61,7 +61,7 @@ def extract_doc_content(doc_path):
                 if i + 1 >= len(blocks):
                     caption = "Figure"
                     figure_str = (
-                        f"#figure(\n  image(\"{image_filename}\", width: 50%),\n  caption: [{caption}]\n)"
+                        f"#figure(\n  image(\"{image_filename}\", width: 100%),\n  caption: [{caption}]\n)"
                     )
                     content_parts.append(figure_str)
                     i += 1
@@ -71,7 +71,7 @@ def extract_doc_content(doc_path):
                 if not next_block.tag.endswith("p"):
                     caption = "Figure"
                     figure_str = (
-                        f"#figure(\n  image(\"{image_filename}\", width: 50%),\n  caption: [{caption}]\n)"
+                        f"#figure(\n  image(\"{image_filename}\", width: 100%),\n  caption: [{caption}]\n)"
                     )
                     content_parts.append(figure_str)
                     i += 1
@@ -86,9 +86,9 @@ def extract_doc_content(doc_path):
                 else:
                     caption = cm.group(1).strip()
 
-                # Build Typst figure block
+                # Build Typst figure block with responsive width
                 figure_str = (
-                    f"#figure(\n  image(\"{image_filename}\", width: 50%),\n  caption: [{caption}]\n)"
+                    f"#figure(\n  image(\"{image_filename}\", width: 100%),\n  caption: [{caption}]\n)"
                 )
                 content_parts.append(figure_str)
 

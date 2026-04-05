@@ -1,3 +1,133 @@
+/**
+ * Certificate Management Service
+ * 
+ * Handles student certificate uploads and downloads
+ * Stores certificates in backend storage only (not Firebase)
+ */
+
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+
+/**
+ * Upload a certificate file
+ */
+export async function uploadCertificate(
+  usn: string,
+  certificateName: string,
+  file: File
+): Promise<{
+  success: boolean;
+  certificateName: string;
+  filename: string;
+  fileSize: number;
+  uploadedAt: string;
+  downloadUrl: string;
+}> {
+  try {
+    const formData = new FormData();
+    formData.append('usn', usn);
+    formData.append('certificateName', certificateName);
+    formData.append('file', file);
+
+    const response = await fetch(`${BACKEND_URL}/api/certificates/upload`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to upload certificate');
+    }
+
+    const data = await response.json();
+    console.log('✅ Certificate uploaded:', data);
+    return data;
+  } catch (error: any) {
+    console.error('❌ Error uploading certificate:', error);
+    throw error;
+  }
+}
+
+/**
+ * List all certificates for a student
+ */
+export async function listCertificates(usn: string): Promise<
+  Array<{
+    filename: string;
+    certificateName: string;
+    fileSize: number;
+    uploadedAt: string;
+    fileType: string;
+    downloadUrl: string;
+  }>
+> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/certificates/list/${usn}`);
+
+    if (!response.ok) {
+      throw new Error('Failed to list certificates');
+    }
+
+    const data = await response.json();
+    console.log('✅ Certificates fetched:', data.certificates);
+    return data.certificates || [];
+  } catch (error: any) {
+    console.error('❌ Error listing certificates:', error);
+    return [];
+  }
+}
+
+/**
+ * Download a certificate file
+ */
+export async function downloadCertificate(usn: string, filename: string): Promise<void> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/certificates/download/${usn}/${filename}`);
+
+    if (!response.ok) {
+      throw new Error('Failed to download certificate');
+    }
+
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+
+    console.log('✅ Certificate downloaded:', filename);
+  } catch (error: any) {
+    console.error('❌ Error downloading certificate:', error);
+    throw error;
+  }
+}
+
+/**
+ * Delete a certificate file
+ */
+export async function deleteCertificate(usn: string, filename: string): Promise<void> {
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/certificates/delete/${usn}/${filename}`, {
+      method: 'DELETE',
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to delete certificate');
+    }
+
+    console.log('✅ Certificate deleted:', filename);
+  } catch (error: any) {
+    console.error('❌ Error deleting certificate:', error);
+    throw error;
+  }
+}
+
+// ============================================================================
+// No-Due Certificate Functions (kept for backwards compatibility)
+// ============================================================================
+
 import { NoDueCertificateData } from '@/types/approval';
 import { format } from 'date-fns';
 

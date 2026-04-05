@@ -201,65 +201,92 @@ async def fetch_papers_from_openalex(query: str, count: int = 50, year_from: int
         raise
 
 async def classify_papers_with_groq(papers: List[Paper]) -> Dict[str, Any]:
-    """Use Groq AI to classify papers into hierarchical clusters"""
+    """Use Groq AI to classify papers into hierarchical clusters with retry logic"""
     if not GROQ_API_KEY:
         logger.warning("Groq API key not configured, using fallback classification")
         return create_fallback_classification(papers)
     
-    try:
-        # Prepare paper summaries for classification
-        paper_summaries = []
-        for paper in papers:
-            summary = {
-                "id": paper.id,
-                "title": paper.title,
-                "abstract": paper.abstract[:500] if paper.abstract else "",  # Limit abstract length
-                "concepts": [concept.name for concept in paper.concepts[:5]]  # Top 5 concepts
-            }
-            paper_summaries.append(summary)
-        
-        # Create prompt for Groq AI
-        prompt = create_classification_prompt(paper_summaries)
-        
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            headers = {
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json"
-            }
+    # Retry configuration for rate limiting
+    MAX_RETRIES = 3
+    INITIAL_BACKOFF = 2  # seconds
+    
+    for attempt in range(MAX_RETRIES):
+        try:
+            # Prepare paper summaries for classification
+            paper_summaries = []
+            for paper in papers:
+                summary = {
+                    "id": paper.id,
+                    "title": paper.title,
+                    "abstract": paper.abstract[:500] if paper.abstract else "",  # Limit abstract length
+                    "concepts": [concept.name for concept in paper.concepts[:5]]  # Top 5 concepts
+                }
+                paper_summaries.append(summary)
             
-            payload = {
-                "model": "llama-3.3-70b-versatile",
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are an expert research classifier. Classify academic papers into engineering disciplines and create hierarchical clusters. Always respond with valid JSON."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                "temperature": 0.3,
-                "max_tokens": 2000
-            }
+            # Create prompt for Groq AI
+            prompt = create_classification_prompt(paper_summaries)
             
-            response = await client.post(GROQ_API_URL, json=payload, headers=headers)
-            response.raise_for_status()
-            
-            groq_response = response.json()
-            classification_text = groq_response["choices"][0]["message"]["content"]
-            
-            # Parse JSON response
-            try:
-                classification_data = json.loads(classification_text)
-                return build_cluster_structure(classification_data, papers)
-            except json.JSONDecodeError:
-                logger.warning("Failed to parse Groq response as JSON, using fallback")
-                return create_fallback_classification(papers)
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                headers = {
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json"
+                }
                 
-    except Exception as e:
-        logger.error(f"Error in Groq classification: {e}")
-        return create_fallback_classification(papers)
+                payload = {
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "You are an expert research classifier. Classify academic papers into engineering disciplines and create hierarchical clusters. Always respond with valid JSON."
+                        },
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 2000
+                }
+                
+                response = await client.post(GROQ_API_URL, json=payload, headers=headers)
+                
+                # Handle 429 Too Many Requests
+                if response.status_code == 429:
+                    if attempt < MAX_RETRIES - 1:
+                        backoff_time = INITIAL_BACKOFF * (2 ** attempt)  # Exponential backoff
+                        logger.warning(f"Groq rate limit (429) hit. Retrying in {backoff_time}s (attempt {attempt + 1}/{MAX_RETRIES})")
+                        await asyncio.sleep(backoff_time)
+                        continue
+                    else:
+                        logger.error("Groq rate limit (429) exceeded max retries, falling back to local classification")
+                        return create_fallback_classification(papers)
+                
+                response.raise_for_status()
+                
+                groq_response = response.json()
+                classification_text = groq_response["choices"][0]["message"]["content"]
+                
+                # Parse JSON response
+                try:
+                    classification_data = json.loads(classification_text)
+                    logger.info("Successfully classified papers using Groq")
+                    return build_cluster_structure(classification_data, papers)
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse Groq response as JSON, using fallback")
+                    return create_fallback_classification(papers)
+                
+        except Exception as e:
+            # For other errors, retry with backoff
+            if attempt < MAX_RETRIES - 1:
+                backoff_time = INITIAL_BACKOFF * (2 ** attempt)
+                logger.warning(f"Error in Groq classification (attempt {attempt + 1}/{MAX_RETRIES}): {str(e)}. Retrying in {backoff_time}s")
+                await asyncio.sleep(backoff_time)
+            else:
+                logger.error(f"Groq classification failed after {MAX_RETRIES} attempts: {str(e)}. Using fallback classification")
+                return create_fallback_classification(papers)
+    
+    # Should not reach here, but just in case
+    return create_fallback_classification(papers)
 
 def create_classification_prompt(paper_summaries: List[Dict]) -> str:
     """Create a structured prompt for Groq AI classification"""

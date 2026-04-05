@@ -8,6 +8,7 @@ import { ApprovalsPrinting } from "@/components/ApprovalsPrinting"
 import { NoDueClearance } from "@/components/NoDueClearance"
 import { PaperSearchCluster } from "@/components/PaperSearchCluster"
 import { ProfileSettings } from "@/components/ProfileSettings"
+import { CertificatesManager } from "@/components/CertificatesManager"
 
 const Index = () => {
   const [activeSection, setActiveSection] = useState("research")
@@ -35,6 +36,8 @@ const Index = () => {
         return <ApprovalsPrinting />
       case "clearance":
         return <NoDueClearance />
+      case "certificates":
+        return <CertificatesManager />
       case "profile":
         return <ProfileSettings />
       default:

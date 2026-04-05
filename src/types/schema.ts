@@ -339,3 +339,63 @@ export function calculateSemester(
   // Clamp between 1 and 8 (typical 4-year program)
   return Math.max(1, Math.min(8, semester));
 }
+
+// ============================================================================
+// COLLECTION: course_feedback_tracking
+// Document ID: {usn}_{departmentId}_{semesterNumber}_{academicYear}
+// ============================================================================
+
+export interface CourseFeedbackTracking {
+  usn: string;                      // Student USN
+  departmentId: string;             // Department ID
+  semesterNumber: number;           // Semester number
+  academicYear: string;             // Academic year (e.g., "2025-26")
+  allFeedbackCompleted: boolean;    // True only if feedback completed for ALL subjects
+  completedSubjects: string[];      // List of subject codes with feedback completed
+  totalSubjects: number;            // Total core + open elective subjects for this semester
+  uploadedAt: Timestamp;            // When the feedback data was uploaded
+  uploadedBy: string;               // Admin ID who uploaded the data
+  
+  // Additional tracking info
+  lastUpdated: Timestamp;
+}
+
+// ============================================================================
+// FEEDBACK STATUS FOR NO-DUE PROCESSING
+// Used to track which subjects need feedback from a student
+// ============================================================================
+
+export interface SubjectFeedbackStatus {
+  subjectCode: string;
+  subjectName: string;
+  type: 'core' | 'open_elective';
+  feedbackCompleted: boolean;
+  feedbackNotifications?: {
+    studentNotified: boolean;
+    teacherNotified: boolean;
+    notifiedAt?: Timestamp;
+  };
+}
+
+// ============================================================================
+// COLLECTION: backlogs
+// Document ID: auto-generated
+// ============================================================================
+// Stores backlog subjects for students that should appear in hall tickets
+// without examination dates until they are cleared
+
+export interface Backlog {
+  id: string;                      // Document ID (auto-generated)
+  usn: string;                      // Student USN with the backlog
+  subjectCode: string;              // Code of the backlog subject
+  subjectName: string;              // Name of the backlog subject
+  departmentId: string;             // Department of the student
+  semesterNumber: number;           // Semester in which backlog exists
+  status: 'pending' | 'cleared';    // Status of the backlog (pending = still needed to clear, cleared = student has cleared it)
+  createdAt: Timestamp;             // When the backlog was added
+  createdBy: string;                // Admin ID who created the backlog
+  clearedAt?: Timestamp;            // When the backlog was marked as cleared
+  clearedBy?: string;               // Admin ID who marked it as cleared
+  notes?: string;                   // Optional notes about the backlog
+}
+

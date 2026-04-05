@@ -24,11 +24,13 @@ service cloud.firestore {
     }
     
     function getUserRole() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+      let userDoc = get(/databases/$(database)/documents/users/$(request.auth.uid));
+      return userDoc.data.role;
     }
     
     function getProfileId() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.profileId;
+      let userDoc = get(/databases/$(database)/documents/users/$(request.auth.uid));
+      return userDoc.data.profileId;
     }
     
     function isStudent() {
@@ -109,6 +111,14 @@ service cloud.firestore {
       return role == 'librarian' || role == 'accounts' || role == 'sports' || role == 'admin';
     }
 
+    function getTeacherDepartment() {
+      return get(/databases/$(database)/documents/teachers/$(getProfileId())).data.departmentId;
+    }
+
+    function getTeacherRole() {
+      return get(/databases/$(database)/documents/teachers/$(getProfileId())).data.role;
+    }
+
     match /teachers/{employeeId} {
       // Authenticated access to teacher profiles
       // - Teachers can read all teachers
@@ -152,7 +162,8 @@ service cloud.firestore {
       // Other admins can read admin profiles
       allow read: if isAuthenticated() && (
         getProfileId() == adminId ||
-        isAdminUser()
+        isAdminUser() ||
+        resource.data.email == request.auth.token.email
       );
       
       // Super admin can create department admins, department admins can create/update their own profile
@@ -502,6 +513,44 @@ service cloud.firestore {
       
       // No one can delete approval requests (maintain audit trail)
       allow delete: if false;
+    }
+
+    // =========================================================================
+    // BACKLOGS COLLECTION - Student backlog management
+    // =========================================================================
+
+    match /backlogs/{backlogId} {
+      // Students can read their own backlogs
+      // Admins can read all backlogs
+      allow read: if isAuthenticated() && (
+        resource.data.usn == getProfileId() ||
+        isAdminUser()
+      );
+      
+      // Only admins can create and manage backlogs (same as students collection)
+      allow create: if isAuthenticated() && isAdminUser();
+      
+      allow update: if isAuthenticated() && isAdminUser();
+      
+      // Only admins can delete backlogs
+      allow delete: if isAdminUser();
+    }
+
+    // =========================================================================
+    // COURSE_FEEDBACK_TRACKING COLLECTION - Feedback completion status
+    // =========================================================================
+
+    match /course_feedback_tracking/{docId} {
+      allow read: if isAuthenticated() && (
+        isAdminUser() ||
+        (isStudent() && resource.data.usn == getProfileId()) ||
+        (isTeacher() && (
+          isInstitutionalTeacher(getTeacherRole()) ||
+          getTeacherDepartment() == resource.data.departmentId
+        ))
+      );
+
+      allow write: if isAdminUser();
     }
     
     // Default: deny all other access

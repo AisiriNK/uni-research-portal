@@ -3,6 +3,7 @@ MCP Server - Main Application
 FastAPI server with Redis + ChromaDB integration.
 """
 import os
+import asyncio
 from datetime import datetime
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -275,6 +276,7 @@ async def tool_summarize_paper(request: SummarizeRequest):
     """
     Generate summary for a single paper (on-demand, with caching).
     Checks cache first, generates via API if needed.
+    With Groq fallback if Gemini fails.
     """
     try:
         with request_duration.labels(endpoint='/tools/summarize').time():
@@ -291,15 +293,94 @@ async def tool_summarize_paper(request: SummarizeRequest):
                     "cached": True
                 }
             
-            # 2. Generate summary via API
+            # 2. Generate summary via API (with retry on rate limits)
             logger.info(f"🤖 Generating summary for {request.paper_id}")
-            summary = await summarize_with_gemini({
-                "id": request.paper_id,
-                "title": request.title,
-                "abstract": request.abstract
-            })
+            summary = None
+            last_error = None
             
-            # 3. Store in cache
+            # Try Gemini up to 3 times with exponential backoff
+            for attempt in range(3):
+                try:
+                    summary = await summarize_with_gemini({
+                        "id": request.paper_id,
+                        "title": request.title,
+                        "abstract": request.abstract
+                    })
+                    logger.info(f"✅ Summary generated successfully via Gemini")
+                    break  # Success, exit retry loop
+                except Exception as e:
+                    last_error = e
+                    error_str = str(e)
+                    is_rate_limit = "429" in error_str or "rate" in error_str.lower()
+                    
+                    if is_rate_limit and attempt < 2:
+                        backoff = 2 * (2 ** attempt)
+                        logger.warning(f"⏳ Gemini rate limit, retrying in {backoff}s (attempt {attempt + 1}/3)")
+                        await asyncio.sleep(backoff)
+                    else:
+                        break  # Don't retry non-rate-limit errors or on last attempt
+            
+            # 3. If Gemini failed, try Groq fallback
+            if summary is None:
+                logger.warning(f"❌ Gemini failed: {last_error}, attempting Groq fallback...")
+                try:
+                    from groq import Groq
+                    
+                    for groq_attempt in range(3):
+                        try:
+                            client = Groq(api_key=settings.GROQ_API_KEY)
+                            
+                            title = request.title or "Unknown"
+                            abstract = request.abstract or "No abstract available"
+                            
+                            prompt = f"""Summarize this research paper concisely:
+
+Title: {title}
+
+Abstract: {abstract}
+
+Provide a 3-4 sentence summary covering:
+1. Main research problem
+2. Methodology approach
+3. Key findings
+4. Significance/impact
+
+Summary:"""
+                            
+                            response = await asyncio.to_thread(
+                                lambda: client.chat.completions.create(
+                                    model="llama-3.3-70b-versatile",
+                                    messages=[{"role": "user", "content": prompt}],
+                                    temperature=0.5,
+                                )
+                            )
+                            
+                            summary = response.choices[0].message.content.strip()
+                            logger.info(f"✅ Summary generated successfully via Groq fallback")
+                            break
+                            
+                        except Exception as groq_e:
+                            groq_error_str = str(groq_e)
+                            is_groq_rate_limit = "429" in groq_error_str or "rate" in groq_error_str.lower()
+                            
+                            if is_groq_rate_limit and groq_attempt < 2:
+                                backoff = 2 * (2 ** groq_attempt)
+                                logger.warning(f"⏳ Groq rate limit, retrying in {backoff}s (attempt {groq_attempt + 1}/3)")
+                                await asyncio.sleep(backoff)
+                            else:
+                                logger.error(f"❌ Groq fallback failed (attempt {groq_attempt + 1}): {groq_e}")
+                                if groq_attempt == 2:
+                                    last_error = groq_e
+                                    
+                except Exception as fallback_e:
+                    logger.error(f"❌ Groq fallback initialization failed: {fallback_e}")
+                    last_error = fallback_e
+            
+            if summary is None:
+                logger.error(f"❌ Failed to generate summary via Gemini or Groq: {last_error}")
+                raise last_error if last_error else Exception("Failed to generate summary")
+            
+            # 4. Store in cache
             logger.info(f"DEBUG cache: storing summary for {request.paper_id[:8]}")
             await storage_manager.store_summary(request.paper_id, summary)
             logger.info(f"DEBUG cache: summary {request.paper_id[:8]} cached")

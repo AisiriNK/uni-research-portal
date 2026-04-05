@@ -2,15 +2,37 @@
   "indexes": [
     {
       "collectionGroup": "hall_tickets",
-      "queryScope": "Collection",
+      "queryScope": "COLLECTION",
       "fields": [
         {
           "fieldPath": "usn",
-          "order": "Ascending"
+          "order": "ASCENDING"
         },
         {
           "fieldPath": "generatedAt",
-          "order": "Descending"
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "backlogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "departmentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "semesterNumber",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
         }
       ]
     }

@@ -16,9 +16,12 @@ import {
   rejectNoDueRequest,
   getMentorStudentSummaries,
   getStudentNoDueRequests,
+  getAcademicContext,
 } from '@/services/noDueAutomationService';
 import type { MentorStudentSummary } from '@/services/noDueAutomationService';
 import { NoDueRequestWithDetails, generateNoDueRequestId } from '@/types/schema';
+import { getStudentFeedbackStatus } from '@/services/courseFeedbackService';
+import { getFeePaidStatus } from '@/services/feePaidStatusService';
 import { format } from 'date-fns';
 
 export function TeacherApprovalTable() {
@@ -34,6 +37,11 @@ export function TeacherApprovalTable() {
   const [mentorError, setMentorError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'teacher' | 'mentor'>('teacher');
   const [mentorRequestDetails, setMentorRequestDetails] = useState<Record<string, NoDueRequestWithDetails[] | null>>({});
+  const [academicYear, setAcademicYear] = useState<string | null>(null);
+  const [feedbackStatusByUsn, setFeedbackStatusByUsn] = useState<Record<string, boolean | null>>({});
+  const [feedbackStatusLoading, setFeedbackStatusLoading] = useState(false);
+  const [feePaidStatusByUsn, setFeePaidStatusByUsn] = useState<Record<string, boolean | null>>({});
+  const [feePaidStatusLoading, setFeePaidStatusLoading] = useState(false);
 
   useEffect(() => {
     if (userProfile) {
@@ -46,6 +54,27 @@ export function TeacherApprovalTable() {
       loadMentorSummaries();
     }
   }, [userProfile]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadAcademicYear = async () => {
+      try {
+        const context = await getAcademicContext();
+        if (!cancelled) {
+          setAcademicYear(context.academicYear);
+        }
+      } catch (error) {
+        console.error('Failed to load academic context for feedback status', error);
+      }
+    };
+
+    loadAcademicYear();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const loadApprovals = async () => {
     if (!userProfile) {
@@ -269,6 +298,148 @@ export function TeacherApprovalTable() {
   );
 
   useEffect(() => {
+    if (!academicYear) {
+      return;
+    }
+
+    const targetMap = new Map<string, { departmentId: string; semesterNumber: number }>();
+
+    approvals.forEach((approval) => {
+      if (approval.departmentId && approval.semesterNumber) {
+        targetMap.set(approval.usn, {
+          departmentId: approval.departmentId,
+          semesterNumber: approval.semesterNumber,
+        });
+      }
+    });
+
+    mentorSummaries.forEach((summary) => {
+      const semesterNumber = summary.student.semesterNumber ?? summary.requests[0]?.semesterNumber;
+      if (summary.student.departmentId && semesterNumber) {
+        targetMap.set(summary.student.usn, {
+          departmentId: summary.student.departmentId,
+          semesterNumber,
+        });
+      }
+    });
+
+    const pendingUsns = Array.from(targetMap.entries()).filter(
+      ([usn]) => feedbackStatusByUsn[usn] === undefined
+    );
+
+    if (pendingUsns.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    setFeedbackStatusLoading(true);
+
+    const loadFeedbackStatuses = async () => {
+      const results = await Promise.all(
+        pendingUsns.map(async ([usn, info]) => {
+          try {
+            const status = await getStudentFeedbackStatus(
+              usn,
+              info.departmentId,
+              info.semesterNumber,
+              academicYear
+            );
+            return { usn, completed: status?.allFeedbackCompleted ?? null };
+          } catch (error) {
+            console.error('Failed to load feedback status', { usn, error });
+            return { usn, completed: null };
+          }
+        })
+      );
+
+      if (cancelled) {
+        return;
+      }
+
+      setFeedbackStatusByUsn((prev) => {
+        const next = { ...prev };
+        results.forEach(({ usn, completed }) => {
+          next[usn] = completed;
+        });
+        return next;
+      });
+      setFeedbackStatusLoading(false);
+    };
+
+    loadFeedbackStatuses();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [academicYear, approvals, mentorSummaries, feedbackStatusByUsn]);
+
+  const renderFeedbackBadge = (usn: string) => {
+    if (!academicYear) {
+      return (
+        <Badge className="mt-1 bg-slate-100 text-slate-700">Feedback unavailable</Badge>
+      );
+    }
+
+    if (feedbackStatusByUsn[usn] === true) {
+      return (
+        <Badge className="mt-1 bg-emerald-100 text-emerald-800">Feedback completed</Badge>
+      );
+    }
+
+    if (feedbackStatusByUsn[usn] === false) {
+      return (
+        <Badge className="mt-1 bg-amber-100 text-amber-800">Feedback pending</Badge>
+      );
+    }
+
+    if (feedbackStatusByUsn[usn] === null) {
+      return (
+        <Badge className="mt-1 bg-gray-100 text-gray-700">Feedback not uploaded</Badge>
+      );
+    }
+
+    if (feedbackStatusLoading) {
+      return (
+        <Badge className="mt-1 bg-slate-100 text-slate-700">Checking feedback…</Badge>
+      );
+    }
+
+    return (
+      <Badge className="mt-1 bg-slate-100 text-slate-700">Feedback unknown</Badge>
+    );
+  };
+
+  const renderFeePaidBadge = (usn: string) => {
+    if (feePaidStatusByUsn[usn] === true) {
+      return (
+        <Badge className="mt-1 bg-green-100 text-green-800">💳 Fee Paid</Badge>
+      );
+    }
+
+    if (feePaidStatusByUsn[usn] === false) {
+      return (
+        <Badge className="mt-1 bg-red-100 text-red-800">⚠️ Fee Not Paid</Badge>
+      );
+    }
+
+    if (feePaidStatusByUsn[usn] === null) {
+      return (
+        <Badge className="mt-1 bg-gray-100 text-gray-700">No fee record</Badge>
+      );
+    }
+
+    if (feePaidStatusLoading) {
+      return (
+        <Badge className="mt-1 bg-slate-100 text-slate-700">Checking fee…</Badge>
+      );
+    }
+
+    return (
+      <Badge className="mt-1 bg-slate-100 text-slate-700">Fee unknown</Badge>
+    );
+  };
+
+  useEffect(() => {
     if (!userProfile || userProfile.role !== 'teacher') {
       return;
     }
@@ -320,6 +491,63 @@ export function TeacherApprovalTable() {
       cancelled = true;
     };
   }, [mentorApprovals, mentorSummaries, mentorRequestDetails, userProfile]);
+
+  // Load fee paid status for mentor requests
+  useEffect(() => {
+    if (!userProfile || userProfile.role !== 'teacher') {
+      return;
+    }
+
+    const mentorSummaryUsns = mentorSummaries.map((s) => s.student.usn);
+    const allMentorUsns = Array.from(new Set(mentorSummaryUsns));
+
+    if (allMentorUsns.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    setFeePaidStatusLoading(true);
+
+    const loadFeeStatuses = async () => {
+      const results = await Promise.all(
+        allMentorUsns.map(async (usn) => {
+          try {
+            const mentorSummary = mentorSummaryByUsn.get(usn);
+            const deptId = mentorSummary?.student.departmentId;
+            
+            if (!deptId) {
+              return { usn, feePaid: null };
+            }
+
+            const status = await getFeePaidStatus(usn, deptId);
+            return { usn, feePaid: status.feePaid };
+          } catch (error) {
+            console.error('Failed to load fee paid status', { usn, error });
+            return { usn, feePaid: null };
+          }
+        })
+      );
+
+      if (cancelled) {
+        return;
+      }
+
+      setFeePaidStatusByUsn((prev) => {
+        const next = { ...prev };
+        results.forEach(({ usn, feePaid }) => {
+          next[usn] = feePaid;
+        });
+        return next;
+      });
+      setFeePaidStatusLoading(false);
+    };
+
+    loadFeeStatuses();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mentorSummaries, mentorSummaryByUsn, userProfile]);
 
   const teacherContent = loading ? (
     <Card>
@@ -400,7 +628,11 @@ export function TeacherApprovalTable() {
                           </div>
                         )}
                       </TableCell>
-                      <TableCell>{approval.usn}</TableCell>
+                      <TableCell>
+                        <div className="font-medium">{approval.usn}</div>
+                        {renderFeedbackBadge(approval.usn)}
+                        {renderFeePaidBadge(approval.usn)}
+                      </TableCell>
                       <TableCell>
                         <Badge variant="outline">{formatCategoryLabel(approval)}</Badge>
                       </TableCell>
@@ -467,7 +699,11 @@ export function TeacherApprovalTable() {
                   return (
                     <TableRow key={rowKey}>
                       <TableCell className="font-medium">{approval.studentName}</TableCell>
-                      <TableCell>{approval.usn}</TableCell>
+                      <TableCell>
+                        <div className="font-medium">{approval.usn}</div>
+                        {renderFeedbackBadge(approval.usn)}
+                        {renderFeePaidBadge(approval.usn)}
+                      </TableCell>
                       <TableCell>{formatCategoryLabel(approval)}</TableCell>
                       <TableCell>{getStatusBadge(approval.status)}</TableCell>
                       <TableCell className="text-xs">
@@ -589,7 +825,11 @@ export function TeacherApprovalTable() {
                                 </div>
                               )}
                             </TableCell>
-                            <TableCell>{approval.usn}</TableCell>
+                            <TableCell>
+                              <div className="font-medium">{approval.usn}</div>
+                              {renderFeedbackBadge(approval.usn)}
+                              {renderFeePaidBadge(approval.usn)}
+                            </TableCell>
                             <TableCell>{getStatusBadge(approval.status)}</TableCell>
                             <TableCell className="text-xs">
                               {summaryRequests ? (
@@ -665,7 +905,11 @@ export function TeacherApprovalTable() {
                         return (
                           <TableRow key={rowKey}>
                             <TableCell className="font-medium">{approval.studentName}</TableCell>
-                            <TableCell>{approval.usn}</TableCell>
+                            <TableCell>
+                              <div className="font-medium">{approval.usn}</div>
+                              {renderFeedbackBadge(approval.usn)}
+                              {renderFeePaidBadge(approval.usn)}
+                            </TableCell>
                             <TableCell>{getStatusBadge(approval.status)}</TableCell>
                             <TableCell className="text-xs">
                               {approval.approvedAt ? format(approval.approvedAt.toDate(), 'MMM dd, yyyy') : '-'}
@@ -702,6 +946,8 @@ export function TeacherApprovalTable() {
                     {summary.student.usn} • {summary.student.departmentId} • Section {summary.student.section} •
                     Sem {summary.student.semesterNumber ?? '—'}
                   </CardDescription>
+                  {renderFeedbackBadge(summary.student.usn)}
+                  {renderFeePaidBadge(summary.student.usn)}
                 </div>
                 <div className="flex flex-col gap-2 md:items-end">
                   {mentorApproved ? (

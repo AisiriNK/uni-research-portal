@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     ADMIN_API_KEY: str = "admin-key"
     GEMINI_API_KEY: Optional[str] = None
     GROQ_API_KEY: Optional[str] = None
-    GEMINI_MODEL: str = "gemini-1.0-pro"
+    GEMINI_MODEL: str = "gemini-2.0-flash"
     
     # Redis Configuration
     REDIS_HOST: str = "localhost"

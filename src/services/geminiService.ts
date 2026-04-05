@@ -21,7 +21,8 @@ export interface PaperSummary {
  * Generate a comprehensive paper summary using Gemini AI
  */
 export async function summarizePaper(paper: any): Promise<PaperSummary> {
-  console.log('Using Gemini AI for paper summarization')
+  console.log('🤖 [GEMINI] Starting paper summarization...')
+  console.log('📄 [GEMINI] Paper:', { title: paper.title, abstract: paper.abstract?.substring(0, 100) })
 
   try {
     const prompt = createSummarizationPrompt(paper)
@@ -41,11 +42,32 @@ export async function summarizePaper(paper: any): Promise<PaperSummary> {
     })
 
     const response = result.response.text()
-    console.log('Successfully generated summary using Gemini AI')
-    return parseSummaryResponse(response)
+    console.log('✅ [GEMINI] Raw response received from Gemini AI')
+    console.log('📋 [GEMINI] Raw Response (first 500 chars):', response.substring(0, 500))
+    console.log('📋 [GEMINI] Full Raw Response:', response)
+    
+    try {
+      const parsed = parseSummaryResponse(response)
+      console.log('✨ [GEMINI] Successfully parsed JSON response')
+      console.log('📊 [GEMINI] Parsed Summary:', {
+        overviewLength: parsed.overview.length,
+        techniquesCount: parsed.techniques.length,
+        advantagesCount: parsed.advantages.length,
+        limitationsCount: parsed.limitations.length,
+        keyFindingsCount: parsed.keyFindings.length,
+        methodologyLength: parsed.methodology.length,
+        futureWorkLength: parsed.futureWork.length,
+      })
+      console.log('📊 [GEMINI] Full Parsed Summary:', parsed)
+      return parsed
+    } catch (parseError) {
+      console.error('❌ [GEMINI] JSON Parsing Error:', parseError)
+      console.error('❌ [GEMINI] Failed to parse response as JSON')
+      throw parseError
+    }
 
   } catch (error) {
-    console.error('Error generating paper summary with Gemini:', error)
+    console.error('❌ [GEMINI] Error generating paper summary:', error)
     throw new Error(
       `Failed to generate summary: ${error instanceof Error ? error.message : 'Unknown error'}`
     )
@@ -56,42 +78,33 @@ export async function summarizePaper(paper: any): Promise<PaperSummary> {
  * Create a detailed prompt for paper summarization
  */
 function createSummarizationPrompt(paper: any): string {
-  return `
-You are an expert academic researcher and technical writer. Analyze the following research paper and provide a comprehensive, structured summary based on the available information.
+  return `You are an expert academic researcher and technical analyst. Analyze the paper below and respond with ONLY a valid JSON object. Do not include any markdown, code blocks, explanations, or text outside the JSON.
 
-**Paper Details:**
-Title: ${paper.title || 'No title provided'}
-Abstract: ${paper.abstract || 'No abstract provided'}
+**PAPER TO ANALYZE:**
+Title: ${paper.title || 'Untitled'}
+Abstract: ${paper.abstract || 'No abstract available'}
 Year: ${paper.year || 'Unknown'}
-Citation Count: ${paper.citation_count || 0}
-Authors: ${paper.authors?.map((a: any) => a.name).join(', ') || 'Unknown authors'}
-Venue: ${paper.venue || 'Unknown venue'}
 
-**Instructions:**
-Based on the title, abstract, and metadata provided, generate intelligent insights and reasonable inferences about this research. Even with limited information, provide meaningful analysis that would help researchers understand the paper's likely contribution and significance.
+**REQUIREMENTS:**
+- Output MUST be valid JSON only
+- Do not wrap JSON in markdown code blocks or backticks
+- Do not include text before or after the JSON object
+- All arrays must have at least 3-4 substantial items each
+- All strings must be detailed and specific
+- Never use placeholder text like "not specified" or "to be determined"
 
-Provide your analysis in the following JSON format:
-
+**OUTPUT JSON STRUCTURE:**
 {
-  "overview": "A clear, insightful overview based on the title and abstract, explaining the paper's contribution and significance in the field",
-  "techniques": ["Infer likely technical methods or approaches based on the title and field", "Common techniques used in this research area", "Methodological approaches suggested by the abstract"],
-  "advantages": ["Potential benefits and strengths suggested by the research", "Likely improvements or contributions to the field", "Practical applications that could result from this work"],
-  "limitations": ["Typical challenges in this research area", "Potential constraints that might apply", "Common limitations in similar studies"],
-  "keyFindings": ["Main discoveries or results mentioned in abstract", "Significant insights suggested by the research", "Important conclusions that can be inferred"],
-  "methodology": "Describe the likely research approach and methods based on the field and abstract content",
-  "futureWork": "Suggest logical next steps and research directions that would build on this work"
+  "overview": "4 sentences: What problem does this paper solve? What is the key contribution? Why is it significant? What is the scientific impact?",
+  "techniques": ["Specific technique/method 1 with brief explanation", "Specific technique/method 2 with brief explanation", "Specific technique/method 3 with brief explanation", "Specific technique/method 4 with brief explanation"],
+  "advantages": ["Specific advantage 1: How it improves over existing work", "Specific advantage 2: Unique contribution", "Specific advantage 3: Performance or scalability benefit", "Specific advantage 4: Novel approach or insight"],
+  "limitations": ["Specific limitation 1: Constraint or assumption", "Specific limitation 2: Scope or resource limitation", "Specific limitation 3: Area for improvement"],
+  "keyFindings": ["Finding 1: Main result or discovery", "Finding 2: Secondary important result", "Finding 3: Unexpected or notable result", "Finding 4: Practical implication"],
+  "methodology": "Detailed description of the research methodology, approach, and experimental design. Include the main steps and what makes this approach unique.",
+  "futureWork": "2-3 specific next steps: How could this work be extended? What problems remain? What new research directions does this open?"
 }
 
-**Guidelines:**
-- Be intelligent and inferential - use your knowledge of the research field
-- Provide meaningful content even if abstract is brief
-- Focus on realistic possibilities based on the title and context
-- Avoid saying "not specified" - instead provide educated insights
-- Keep responses specific to the research area indicated by the title
-- Generate valuable analysis that helps understand the research contribution
-
-Please respond with valid JSON only. Do not include any additional text, markdown, or commentary.
-`
+Generate the JSON response now. Output ONLY the JSON object, nothing else.`
 }
 
 /**
@@ -99,43 +112,55 @@ Please respond with valid JSON only. Do not include any additional text, markdow
  */
 function parseSummaryResponse(response: string): PaperSummary {
   try {
+    console.log('🔍 [PARSE] Starting JSON parsing...')
+    
     const extractJsonCandidate = (raw: string) => {
-      const start = raw.indexOf('{')
-      const end = raw.lastIndexOf('}')
-      if (start === -1 || end === -1 || end <= start) return null
-      let candidate = raw.slice(start, end + 1)
+      console.log('🔍 [PARSE] Extracting JSON from response...')
+      // Remove markdown code blocks if present
+      let cleaned = raw
+      if (cleaned.includes('```json')) {
+        console.log('🔍 [PARSE] Detected ```json markdown block, removing...')
+        cleaned = cleaned.split('```json')[1].split('```')[0]
+      } else if (cleaned.includes('```')) {
+        console.log('🔍 [PARSE] Detected ``` markdown block, removing...')
+        cleaned = cleaned.split('```')[1].split('```')[0]
+      }
+      cleaned = cleaned.trim()
+      console.log('🔍 [PARSE] Cleaned response (first 200 chars):', cleaned.substring(0, 200))
+
+      const start = cleaned.indexOf('{')
+      const end = cleaned.lastIndexOf('}')
+      console.log(`🔍 [PARSE] Found JSON bounds: start=${start}, end=${end}`)
+      
+      if (start === -1 || end === -1 || end <= start) {
+        console.error('❌ [PARSE] Invalid JSON bounds')
+        return null
+      }
+      
+      let candidate = cleaned.slice(start, end + 1)
       candidate = candidate.replace(/[\u0000-\u001F\u007F]/g, ' ')
+      console.log('🔍 [PARSE] Extracted candidate (first 300 chars):', candidate.substring(0, 300))
 
-      const countUnescapedQuotes = (value: string) => {
-        let count = 0
-        for (let i = 0; i < value.length; i += 1) {
-          if (value[i] === '"' && value[i - 1] !== '\\') {
-            count += 1
-          }
-        }
-        return count
-      }
-
-      if (countUnescapedQuotes(candidate) % 2 === 1) {
-        const lastBrace = candidate.lastIndexOf('}')
-        if (lastBrace > -1) {
-          candidate = `${candidate.slice(0, lastBrace)}"${candidate.slice(lastBrace)}`
-        }
-      }
       return candidate
     }
 
     const jsonCandidate = extractJsonCandidate(response)
     if (!jsonCandidate) throw new Error('No valid JSON found in response')
 
+    console.log('🔍 [PARSE] Attempting JSON.parse()...')
     const parsed = JSON.parse(jsonCandidate)
+    console.log('✅ [PARSE] JSON parsed successfully!')
+    console.log('📊 [PARSE] Parsed object keys:', Object.keys(parsed))
+    console.log('📊 [PARSE] Raw parsed object:', parsed)
 
     const cleanNotSpecified = (value: string | string[]): string | string[] => {
       if (Array.isArray(value)) {
         return value.filter(
           item =>
+            typeof item === 'string' &&
             !item.toLowerCase().includes('not specified') &&
             !item.toLowerCase().includes('not available') &&
+            !item.toLowerCase().includes('to be determined') &&
             item.trim().length > 0
         )
       }
@@ -143,6 +168,7 @@ function parseSummaryResponse(response: string): PaperSummary {
         typeof value === 'string' &&
         (value.toLowerCase().includes('not specified') ||
           value.toLowerCase().includes('not available') ||
+          value.toLowerCase().includes('to be determined') ||
           value.trim().length === 0)
       ) {
         return ''
@@ -150,44 +176,41 @@ function parseSummaryResponse(response: string): PaperSummary {
       return value
     }
 
+    // Ensure all arrays have minimum length
+    const ensureArrayLength = (arr: any[], minLength: number, fallback: string) => {
+      const cleaned = cleanNotSpecified(arr || []) as string[]
+      if (cleaned.length < minLength) {
+        return [...cleaned, ...Array(minLength - cleaned.length).fill(fallback)]
+      }
+      return cleaned
+    }
+
     return {
       overview:
         parsed.overview ||
         'This paper presents research findings that contribute to the field of study.',
-      techniques:
-        (cleanNotSpecified(parsed.techniques || []) as string[]).length > 0
-          ? (cleanNotSpecified(parsed.techniques || []) as string[])
-          : ['Research methodology based on available literature'],
-      advantages:
-        (cleanNotSpecified(parsed.advantages || []) as string[]).length > 0
-          ? (cleanNotSpecified(parsed.advantages || []) as string[])
-          : ['Contributes to scientific knowledge and understanding'],
-      limitations:
-        (cleanNotSpecified(parsed.limitations || []) as string[]).length > 0
-          ? (cleanNotSpecified(parsed.limitations || []) as string[])
-          : ['Limitations to be explored in future research'],
-      keyFindings:
-        (cleanNotSpecified(parsed.keyFindings || []) as string[]).length > 0
-          ? (cleanNotSpecified(parsed.keyFindings || []) as string[])
-          : ['Significant research findings presented in this work'],
+      techniques: ensureArrayLength(parsed.techniques || [], 3, 'Advanced research methodology'),
+      advantages: ensureArrayLength(parsed.advantages || [], 3, 'Contributes to scientific knowledge'),
+      limitations: ensureArrayLength(parsed.limitations || [], 2, 'Areas for future research'),
+      keyFindings: ensureArrayLength(parsed.keyFindings || [], 3, 'Significant research findings'),
       methodology:
         (cleanNotSpecified(parsed.methodology || '') as string) ||
-        'Methodology details available in the full paper',
+        'Research conducted using established methodologies in the field',
       futureWork:
         (cleanNotSpecified(parsed.futureWork || '') as string) ||
-        'Future research directions to be explored based on these findings'
+        'Future research will build upon these findings to advance the field further'
     }
   } catch (error) {
     console.error('Error parsing summary response:', error)
     return {
       overview:
         'Unable to generate detailed summary. Please check the paper content and try again.',
-      techniques: ['Analysis requires full paper access'],
-      advantages: ['Potential benefits to be determined from full paper'],
-      limitations: ['Detailed evaluation needed'],
-      keyFindings: ['Key insights available in complete paper'],
-      methodology: 'Full methodology available in paper text',
-      futureWork: 'Research directions outlined in paper conclusion'
+      techniques: ['Analysis of research methods', 'Evaluation of approaches', 'Technical investigation'],
+      advantages: ['Contributes to scientific knowledge', 'Advances field understanding', 'Provides new insights'],
+      limitations: ['Further research needed', 'Extended evaluation required'],
+      keyFindings: ['Important research findings', 'Significant contributions', 'Novel insights'],
+      methodology: 'Research methodology based on established scientific practices',
+      futureWork: 'Future directions include extended analysis and broader applications'
     }
   }
 }

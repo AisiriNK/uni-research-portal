@@ -39,11 +39,9 @@ const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
 // Initialize Firebase App Check (optional)
 const appCheckSiteKey = import.meta.env.VITE_FIREBASE_APPCHECK_SITE_KEY;
-if (appCheckSiteKey) {
-  if (import.meta.env.DEV) {
-    // Use debug token in development
-    (self as any).FIREBASE_APPCHECK_DEBUG_TOKEN = true;
-  }
+const enableAppCheck = Boolean(appCheckSiteKey) && import.meta.env.PROD;
+
+if (enableAppCheck && appCheckSiteKey) {
   initializeAppCheck(app, {
     provider: new ReCaptchaV3Provider(appCheckSiteKey),
     isTokenAutoRefreshEnabled: true,

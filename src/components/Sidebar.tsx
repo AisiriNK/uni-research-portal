@@ -6,7 +6,8 @@ import {
   ClipboardCheck,
   ChevronLeft,
   ChevronRight,
-  Network
+  Network,
+  Award
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -16,6 +17,7 @@ const navigation = [
   { name: "AI Report Formatter", href: "#formatter", icon: FileText },
   { name: "No-Due Clearance", href: "#approvals", icon: CheckCircle },
   { name: "Report Submission", href: "#clearance", icon: ClipboardCheck },
+  { name: "Certificates", href: "#certificates", icon: Award },
 ]
 
 interface SidebarProps {

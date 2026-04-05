@@ -18,24 +18,74 @@ import { logNoDueEvent } from '@/lib/logging';
 const SUBMISSIONS_COLLECTION = 'noDueSubmissions';
 
 /**
- * Upload PDF file to Firebase Storage
+ * Upload PDF file to Firebase Storage with fallback to backend
  */
 export async function uploadSubmissionPDF(file: File, studentId: string): Promise<{url: string, name: string}> {
   const timestamp = Date.now();
   const fileName = `${studentId}_${timestamp}_${file.name}`;
-  const storageRef = ref(storage, `no-due-submissions/${studentId}/${fileName}`);
+  const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+  
   logNoDueEvent('submission:upload_start', { studentId, fileName });
 
   try {
+    // Try Firebase Storage first
+    const storageRef = ref(storage, `no-due-submissions/${studentId}/${fileName}`);
     const snapshot = await uploadBytes(storageRef, file);
     const url = await getDownloadURL(snapshot.ref);
-    logNoDueEvent('submission:upload_success', { studentId, fileName });
+    
+    logNoDueEvent('submission:upload_success', { studentId, fileName, backend: 'firebase' });
     
     return { url, name: file.name };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logNoDueEvent('submission:upload_error', { studentId, fileName, message }, 'error');
-    throw error;
+  } catch (firebaseError) {
+    // Firebase failed, try backend fallback
+    console.warn('Firebase upload failed, trying backend fallback:', firebaseError);
+    logNoDueEvent('submission:upload_firebase_failed', { studentId, fileName }, 'warning');
+    
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('student_id', studentId);
+      formData.append('student_name', studentId);
+      formData.append('category', 'general');
+      
+      const response = await fetch(`${BACKEND_URL}/api/report-submissions/upload`, {
+        method: 'POST',
+        body: formData,
+        headers: {
+          // Don't set Content-Type - let the browser set it for FormData
+        }
+      });
+      
+      if (!response.ok) {
+        let errorDetail = 'Backend upload failed';
+        try {
+          const errorData = await response.json();
+          errorDetail = errorData.detail || errorData.message || errorDetail;
+        } catch (e) {
+          // If response is not JSON, use status text
+          errorDetail = response.statusText || errorDetail;
+        }
+        throw new Error(errorDetail);
+      }
+      
+      const data = await response.json();
+      if (data.success && data.downloadUrl) {
+        // Convert relative URLs to absolute URLs using BACKEND_URL
+        const absoluteUrl = data.downloadUrl.startsWith('http') 
+          ? data.downloadUrl 
+          : `${BACKEND_URL}${data.downloadUrl}`;
+        
+        logNoDueEvent('submission:upload_success', { studentId, fileName, backend: 'backend-fallback' });
+        return { url: absoluteUrl, name: file.name };
+      }
+      
+      throw new Error(data.detail || 'Invalid backend response');
+    } catch (backendError) {
+      const message = backendError instanceof Error ? backendError.message : String(backendError);
+      console.error('Backend upload error:', backendError);
+      logNoDueEvent('submission:upload_error', { studentId, fileName, message, backend: 'both-failed' }, 'error');
+      throw new Error(`Upload failed on both Firebase and backend: ${message}`);
+    }
   }
 }
 
@@ -248,7 +298,7 @@ export async function getAllTeachers(): Promise<Array<{id: string, name: string,
         id: doc.id,
         name: data.name,
         email: data.email,
-        dept: data.dept || '',
+        dept: data.departmentId || '',
       });
     });
     
